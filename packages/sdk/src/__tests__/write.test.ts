@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports */
 import { LinkoraClient } from "../client";
 import { InvalidInputError, ValidationError } from "../errors";
 
@@ -32,7 +33,7 @@ jest.mock("@stellar/stellar-base", () => ({
   })),
   scValToNative: jest.fn(),
   TransactionBuilder: jest.fn(() => ({ addOperation: mockAddOperation })),
-  Account: jest.fn(),
+  Account: jest.fn().mockImplementation((accountId: string) => ({ _accountId: accountId })),
   Keypair: { random: jest.fn(() => ({ publicKey: () => "GWRITEKEYXXXXXXXXXXXXXXXXXXXXXXXXXX" })) },
   xdr: {},
 }));
@@ -271,9 +272,11 @@ describe("prepare*Tx methods (Submittable)", () => {
   const val = (v: unknown) => expect.objectContaining({ _val: v });
 
   it("prepareCreatePostTx fetches sequence and uses prepareTransaction", async () => {
-    jest.spyOn(client as any, 'getAccountForTx').mockResolvedValue(new (require("@stellar/stellar-base").Account)("GAUTHOR", "100"));
-    jest.spyOn(client, 'prepareTransaction').mockResolvedValue({
-      toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" })
+    jest
+      .spyOn(client as any, "getAccountForTx")
+      .mockResolvedValue(new (require("@stellar/stellar-base").Account)("GAUTHOR", "100"));
+    jest.spyOn(client, "prepareTransaction").mockResolvedValue({
+      toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" }),
     } as any);
 
     const result = await client.prepareCreatePostTx("GAUTHOR", "hello");
@@ -287,9 +290,11 @@ describe("prepare*Tx methods (Submittable)", () => {
   });
 
   it("prepareFollowTx fetches sequence and uses prepareTransaction", async () => {
-    jest.spyOn(client as any, 'getAccountForTx').mockResolvedValue(new (require("@stellar/stellar-base").Account)("GA", "100"));
-    jest.spyOn(client, 'prepareTransaction').mockResolvedValue({
-      toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" })
+    jest
+      .spyOn(client as any, "getAccountForTx")
+      .mockResolvedValue(new (require("@stellar/stellar-base").Account)("GA", "100"));
+    jest.spyOn(client, "prepareTransaction").mockResolvedValue({
+      toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" }),
     } as any);
 
     const result = await client.prepareFollowTx("GA", "GB");
@@ -302,4 +307,3 @@ describe("prepare*Tx methods (Submittable)", () => {
     );
   });
 });
-

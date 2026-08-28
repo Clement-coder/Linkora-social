@@ -64,7 +64,7 @@ export class ConnectionHealthMonitor {
   private hasChecked = false;
   private retryMetrics: RetryMetrics = emptyRetryMetrics();
 
-private boundResume = () => this.resume();
+  private boundResume = () => this.resume();
 
   constructor(rpcUrl: string, config: HealthCheckConfig = {}) {
     this.rpcUrl = rpcUrl;
@@ -117,7 +117,6 @@ private boundResume = () => this.resume();
     }
   }
 
-
   /** Alias for start(). Useful for resuming after a sustained outage stops polling. */
   resume(): void {
     this.start();
@@ -160,7 +159,10 @@ private boundResume = () => this.resume();
   }
 
   private scheduleCheck(delayMs: number): void {
-    const baseJitter = delayMs === 0 ? Math.random() * this.backoffMs : delayMs * 0.2 * Math.random();
+    const baseJitter =
+      delayMs === 0
+        ? Math.random() * Math.min(this.intervalMs, 100)
+        : delayMs * 0.2 * Math.random();
     this.timer = setTimeout(() => this.runCheck(), delayMs + baseJitter);
   }
 
