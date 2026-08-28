@@ -1104,7 +1104,7 @@ impl LinkoraContract {
             Self::bump(&env, &author_key);
         }
 
-        let remaining_entries: u32 = f_count + following_count + author_posts.len() as u32;
+        let remaining_entries: u32 = f_count + following_count + author_posts.len();
 
         if f_count == 0 && following_count == 0 && author_posts.is_empty() {
             env.storage().persistent().remove(&tombstone_key);
