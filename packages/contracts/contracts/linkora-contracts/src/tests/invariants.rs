@@ -1,4 +1,5 @@
 #![cfg(test)]
+extern crate std;
 
 use crate::test::{
     credential_authority_pubkey, credential_authority_signing_key, sign_credential_root,
@@ -358,6 +359,49 @@ fn invariant_no_orphaned_authored_posts_after_profile_deletion() {
     // Invariant: Authored posts are tombstoned and no longer retrievable
     assert!(client.get_post(&post_id1).is_none());
     assert!(client.get_post(&post_id2).is_none());
+}
+
+// ── Issue #1244: fee_bps upper-bound invariant ────────────────────────────────
+
+#[test]
+fn test_invariant_fee_bps_bounded_at_boundaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_test_env(&env);
+
+    // Invariant: 0 <= fee_bps <= 10_000 holds at both boundaries.
+    client.set_fee(&admin, &0);
+    assert_eq!(client.get_fee_bps(), 0);
+
+    client.set_fee(&admin, &10_000);
+    assert_eq!(client.get_fee_bps(), 10_000);
+}
+
+#[test]
+fn test_invariant_fee_bps_never_exceeds_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_test_env(&env);
+
+    client.set_fee(&admin, &500);
+    assert_eq!(client.get_fee_bps(), 500);
+
+    // An admin misconfiguration (fee_bps > 10_000, i.e. > 100%) must be
+    // rejected outright rather than clamped or stored, since fee computation
+    // (amount * fee_bps / 10_000) would otherwise exceed the transferred
+    // amount and cause tip/pool operations to revert or mint negative net
+    // value.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.set_fee(&admin, &20_000);
+    }));
+    assert!(
+        result.is_err(),
+        "fee_bps above 10_000 must panic, not clamp"
+    );
+
+    // Invariant: the rejected update must leave the previously stored,
+    // in-bounds fee untouched.
+    assert_eq!(client.get_fee_bps(), 500);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
