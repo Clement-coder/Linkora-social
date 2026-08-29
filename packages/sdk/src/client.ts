@@ -6,6 +6,7 @@ import {
   Transaction,
   TransactionBuilder,
   Account,
+  Address,
   Keypair,
   Operation,
   StrKey,
@@ -111,6 +112,12 @@ function scvSymbol(value: string): xdr.ScVal {
 }
 function scvI128(value: number | bigint): xdr.ScVal {
   return nativeToScVal(value, { type: "i128" });
+}
+function scvAddressVec(value: string[]): xdr.ScVal {
+  return nativeToScVal(
+    value.map((addr) => Address.fromString(addr)),
+    { type: "vec" }
+  );
 }
 
 function ensureNonEmptyString(value: string, fieldName: string): void {
@@ -456,8 +463,22 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     sourceAccount: Account,
     ...args: xdr.ScVal[]
   ): Promise<Transaction> {
+    return this.prepareTransactionOnContract(method, this._contractId, sourceAccount, ...args);
+  }
+
+  /**
+   * Like {@link prepareTransaction}, but builds the Soroban invocation against an
+   * arbitrary contract (e.g. a SEP-41 token contract) instead of the Linkora
+   * contract. Used to prepare the token `increase_allowance` pre-approval step.
+   */
+  private async prepareTransactionOnContract(
+    method: string,
+    contractId: string,
+    sourceAccount: Account,
+    ...args: xdr.ScVal[]
+  ): Promise<Transaction> {
     const server = this.createRpcServer();
-    const contract = new Contract(this._contractId);
+    const contract = new Contract(contractId);
 
     const rawTx = new TransactionBuilder(sourceAccount, {
       fee: "100",
@@ -1453,6 +1474,44 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   }
 
   /**
+   * Build a submittable create_pool transaction with the caller as the proper
+   * source account.
+   *
+   * @param admin The Stellar public key of the pool creator/initial admin.
+   * @param poolId The unique identifier for the pool.
+   * @param token The contract ID of the token used in this pool.
+   * @param initialAdmins Array of Stellar public keys of the initial admins.
+   * @param threshold The required signature threshold for pool actions.
+   * @param horizonUrl Optional Horizon URL to use. Defaults based on the network passphrase.
+   * @returns The base64-encoded transaction envelope XDR ready for wallet signing.
+   */
+  async prepareCreatePoolTx(
+    admin: string,
+    poolId: string,
+    token: string,
+    initialAdmins: string[],
+    threshold: number | bigint,
+    horizonUrl?: string
+  ): Promise<string> {
+    ensureAddress(admin, "admin");
+    ensureNonEmptyString(poolId, "poolId");
+    ensureAddress(token, "token");
+    ensureAddressList(initialAdmins, "initialAdmins");
+    ensureInteger(threshold, "threshold", 1);
+    const sourceAccount = await this.getAccountForTx(admin, horizonUrl);
+    const tx = await this.prepareTransaction(
+      "create_pool",
+      sourceAccount,
+      scvAddress(admin),
+      scvSymbol(poolId),
+      scvAddress(token),
+      scvAddressVec(initialAdmins),
+      scvU32(Number(threshold))
+    );
+    return tx.toEnvelope().toXDR("base64");
+  }
+
+  /**
    * Deposit tokens into a pool.
    *
    * @param depositor The Stellar public key of the user depositing tokens.
@@ -1509,6 +1568,41 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   }
 
   /**
+   * Build a submittable SEP-41 `increase_allowance` transaction against the
+   * token contract, authorizing the pool contract to spend the depositor's
+   * tokens during `pool_deposit`.
+   *
+   * @param depositor The Stellar public key of the token holder granting the allowance.
+   * @param token The contract ID of the SEP-41 token.
+   * @param spender The contract / account authorized to spend (the pool contract).
+   * @param amount The amount to approve in stroops.
+   * @param horizonUrl Optional Horizon URL to use. Defaults based on the network passphrase.
+   * @returns The base64-encoded transaction envelope XDR ready for wallet signing.
+   */
+  async prepareIncreaseAllowanceTx(
+    depositor: string,
+    token: string,
+    spender: string,
+    amount: number | bigint,
+    horizonUrl?: string
+  ): Promise<string> {
+    ensureAddress(depositor, "depositor");
+    ensureAddress(token, "token");
+    ensureAddress(spender, "spender");
+    ensurePositiveInteger(amount, "amount");
+    const sourceAccount = await this.getAccountForTx(depositor, horizonUrl);
+    const tx = await this.prepareTransactionOnContract(
+      "increase_allowance",
+      token,
+      sourceAccount,
+      scvAddress(depositor),
+      scvAddress(spender),
+      scvI128(amount)
+    );
+    return tx.toEnvelope().toXDR("base64");
+  }
+
+  /**
    * Withdraw tokens from a pool (requires multi-sig authorization).
    *
    * @param signers Array of Stellar public keys of the admins authorizing the withdrawal.
@@ -1539,6 +1633,40 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     ensurePositiveInteger(amount, "amount");
     ensureAddress(recipient, "recipient");
     return super.poolWithdraw(signers, poolId, BigInt(amount), recipient);
+  }
+
+  /**
+   * Build a submittable pool_withdraw transaction with the caller as the proper
+   * source account.
+   *
+   * @param signers Array of Stellar public keys of the admins authorizing the withdrawal.
+   * @param poolId The ID of the pool.
+   * @param amount The amount to withdraw.
+   * @param recipient The Stellar public key to receive the tokens.
+   * @param horizonUrl Optional Horizon URL to use. Defaults based on the network passphrase.
+   * @returns The base64-encoded transaction envelope XDR ready for wallet signing.
+   */
+  async preparePoolWithdrawTx(
+    signers: string[],
+    poolId: string,
+    amount: number | bigint,
+    recipient: string,
+    horizonUrl?: string
+  ): Promise<string> {
+    ensureAddressList(signers, "signers");
+    ensureNonEmptyString(poolId, "poolId");
+    ensurePositiveInteger(amount, "amount");
+    ensureAddress(recipient, "recipient");
+    const sourceAccount = await this.getAccountForTx(signers[0], horizonUrl);
+    const tx = await this.prepareTransaction(
+      "pool_withdraw",
+      sourceAccount,
+      scvAddressVec(signers),
+      scvSymbol(poolId),
+      scvI128(amount),
+      scvAddress(recipient)
+    );
+    return tx.toEnvelope().toXDR("base64");
   }
 
   /**
