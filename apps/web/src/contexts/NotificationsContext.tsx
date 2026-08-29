@@ -7,6 +7,7 @@ const LS_UNREAD_KEY = "linkora:notifications:unread";
 interface NotificationsContextValue {
   unreadCount: number;
   incrementUnread: () => void;
+  decrementUnread: () => void;
   resetUnread: () => void;
   addNotification: (notification: {
     status: "pending" | "success" | "error";
@@ -26,6 +27,7 @@ interface NotificationsContextValue {
 const NotificationsContext = createContext<NotificationsContextValue>({
   unreadCount: 0,
   incrementUnread: () => {},
+  decrementUnread: () => {},
   resetUnread: () => {},
   addNotification: () => "",
   updateNotification: () => {},
@@ -60,6 +62,14 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
     localStorage.removeItem(LS_UNREAD_KEY);
   }, []);
 
+  const decrementUnread = useCallback(() => {
+    setUnreadCount((prev) => {
+      const next = Math.max(0, prev - 1);
+      localStorage.setItem(LS_UNREAD_KEY, String(next));
+      return next;
+    });
+  }, []);
+
   const addNotification = useCallback(
     (notification: {
       status: "pending" | "success" | "error";
@@ -89,7 +99,14 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
 
   return (
     <NotificationsContext.Provider
-      value={{ unreadCount, incrementUnread, resetUnread, addNotification, updateNotification }}
+      value={{
+        unreadCount,
+        incrementUnread,
+        decrementUnread,
+        resetUnread,
+        addNotification,
+        updateNotification,
+      }}
     >
       {children}
     </NotificationsContext.Provider>
