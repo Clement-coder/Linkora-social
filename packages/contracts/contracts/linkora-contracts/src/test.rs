@@ -3568,6 +3568,92 @@ fn test_update_pool_threshold_zero_does_not_mutate_pool_threshold() {
     );
 }
 
+#[test]
+#[should_panic(expected = "threshold cannot exceed admin count")]
+fn test_update_pool_threshold_exceeds_admin_count_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+
+    let pool_id = symbol_short!("p_exceed");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &2,
+    );
+
+    // Setting threshold = 3 on a 2-admin pool must panic with "threshold cannot exceed admin count"
+    client.update_pool_threshold(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &3,
+    );
+}
+
+#[test]
+fn test_update_pool_threshold_exceeds_admin_count_does_not_mutate_pool_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+
+    let pool_id = symbol_short!("p_exceed2");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &2,
+    );
+
+    let result = client.try_update_pool_threshold(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &3,
+    );
+    assert!(
+        result.is_err(),
+        "update_pool_threshold(.., threshold=3) on 2-admin pool must return Err"
+    );
+
+    let pool_after = client.get_pool(&pool_id).unwrap();
+    assert_eq!(
+        pool_after.threshold, 2,
+        "pool.threshold must remain at initial value (2) after rejected update"
+    );
+}
+
+#[test]
+#[should_panic(expected = "threshold cannot exceed admin count")]
+fn test_create_pool_exceeds_admin_count_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+
+    let pool_id = symbol_short!("p_crexcd");
+    // Initial threshold 3 > initial_admins.len() (2) must panic
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &3,
+    );
+}
+
 // ── Issue #124: delete_post success path, unauthorized caller, event emission ─
 
 #[test]
