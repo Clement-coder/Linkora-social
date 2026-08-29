@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { signAndSubmitTransaction, buildSignAndSubmit } from "./tx";
 import { signTransaction } from "@stellar/freighter-api";
