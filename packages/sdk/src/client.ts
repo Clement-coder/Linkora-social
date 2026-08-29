@@ -101,6 +101,12 @@ function scvString(value: string): xdr.ScVal {
 function scvU32(value: number): xdr.ScVal {
   return nativeToScVal(value, { type: "u32" });
 }
+function scvU64(value: number | bigint): xdr.ScVal {
+  return nativeToScVal(value, { type: "u64" });
+}
+function scvSymbol(value: string): xdr.ScVal {
+  return nativeToScVal(value, { type: "symbol" });
+}
 function scvI128(value: number | bigint): xdr.ScVal {
   return nativeToScVal(value, { type: "i128" });
 }
@@ -1097,11 +1103,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * @param horizonUrl Optional Horizon URL to use. Defaults based on the network passphrase.
    * @returns The base64-encoded transaction envelope XDR ready for wallet signing.
    */
-  async prepareCreatePostTx(
-    author: string,
-    content: string,
-    horizonUrl?: string
-  ): Promise<string> {
+  async prepareCreatePostTx(author: string, content: string, horizonUrl?: string): Promise<string> {
     ensureAddress(author, "author");
     ensureNonEmptyString(content, "content");
     const sourceAccount = await this.getAccountForTx(author, horizonUrl);
@@ -1160,11 +1162,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * @param horizonUrl Optional Horizon URL to use. Defaults based on the network passphrase.
    * @returns The base64-encoded transaction envelope XDR ready for wallet signing.
    */
-  async prepareFollowTx(
-    follower: string,
-    followee: string,
-    horizonUrl?: string
-  ): Promise<string> {
+  async prepareFollowTx(follower: string, followee: string, horizonUrl?: string): Promise<string> {
     ensureAddress(follower, "follower");
     ensureAddress(followee, "followee");
     const sourceAccount = await this.getAccountForTx(follower, horizonUrl);
