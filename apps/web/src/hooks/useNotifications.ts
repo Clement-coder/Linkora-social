@@ -58,7 +58,7 @@ async function fetchPostExcerpt(postId: number): Promise<string | undefined> {
 
 export function useNotifications() {
   const { address } = useWalletContext();
-  const { incrementUnread, resetUnread } = useNotificationsContext();
+  const { incrementUnread, decrementUnread, resetUnread } = useNotificationsContext();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [page, setPage] = useState(1);
   const addressRef = useRef<string | null>(null);
@@ -185,6 +185,27 @@ export function useNotifications() {
     resetUnread();
   }, [resetUnread]);
 
+  /**
+   * Mark a single notification as read and keep the global unread counter in
+   * sync. Unread state is preserved until the user explicitly reads an item
+   * (or uses "Mark all read"); it is never cleared just by visiting the page.
+   */
+  const markRead = useCallback(
+    (id: string) => {
+      if (!addressRef.current) return;
+      const target = notifications.find((n) => n.id === id);
+      if (target?.read) return;
+
+      setNotifications((prev) => {
+        const next = prev.map((n) => (n.id === id ? { ...n, read: true } : n));
+        persist(addressRef.current!, next);
+        return next;
+      });
+      decrementUnread();
+    },
+    [decrementUnread, notifications]
+  );
+
   const loadMore = useCallback(() => {
     setPage((p) => p + 1);
   }, []);
@@ -193,5 +214,12 @@ export function useNotifications() {
   const hasMore = notifications.length > page * PAGE_SIZE;
   const unreadCount = notifications.filter((n) => !n.read).length;
 
-  return { notifications: visibleNotifications, hasMore, unreadCount, markAllRead, loadMore };
+  return {
+    notifications: visibleNotifications,
+    hasMore,
+    unreadCount,
+    markAllRead,
+    markRead,
+    loadMore,
+  };
 }
