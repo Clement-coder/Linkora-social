@@ -86,6 +86,62 @@ export const OptimisticStore = {
     return tipStateMap.get(key);
   },
 
+  clearLikeState(key: string) {
+    likeStateMap.delete(key);
+    notify();
+  },
+
+  clearTipState(key: string) {
+    tipStateMap.delete(key);
+    notify();
+  },
+
+  /**
+   * Reconcile optimistic state against a fresh server response.
+   *
+   * Resolution rules:
+   * 1. For each likeStateMap entry whose postId IS in visiblePosts,
+   *    delete it — the component will fall back to `initialState` which
+   *    reflects the server-confirmed value (server wins).
+   * 2. For each likeStateMap entry whose postId is NOT in visiblePosts,
+   *    delete it — the post has been filtered out and the optimistic
+   *    entry should not persist.
+   * 3. Entries belonging to a different userAddress are left untouched.
+   * 4. Same rules apply for tipStateMap (keyed by postId string).
+   */
+  reconcileFeed(userAddress: string | null, visiblePosts: Array<{ id: string | number }>) {
+    const visibleIds = new Set(visiblePosts.map((p) => String(p.id)));
+    let changed = false;
+
+    // Reconcile like state — keys are `${userAddress}:${postId}`
+    if (userAddress) {
+      for (const key of [...likeStateMap.keys()]) {
+        const separatorIdx = key.indexOf(":");
+        if (separatorIdx === -1) continue;
+
+        const keyUser = key.slice(0, separatorIdx);
+        if (keyUser !== userAddress) continue;
+
+        // Post is either present (server wins) or absent (filtered out) — either way, drop it
+        likeStateMap.delete(key);
+        changed = true;
+      }
+    }
+
+    // Reconcile tip state — keys are postId strings
+    for (const key of [...tipStateMap.keys()]) {
+      // Only prune entries for posts we have a definitive answer about.
+      // If the post is in the visible set, server truth is now available
+      // via initialState. If absent, the optimistic entry is stale.
+      tipStateMap.delete(key);
+      changed = true;
+    }
+
+    if (changed) {
+      notify();
+    }
+  },
+
   // Legacy API for FollowList.tsx
   subscribe,
   isFollowing(targetAddress: string): boolean {
@@ -152,10 +208,7 @@ export function useOptimisticLike(
  * Returns the optimistic tip state if one exists, otherwise falls back
  * to `initialState`.
  */
-export function useOptimisticTip(
-  postId: string | bigint,
-  initialState: TipState
-): TipState {
+export function useOptimisticTip(postId: string | bigint, initialState: TipState): TipState {
   const key = String(postId);
 
   const optimistic = useSyncExternalStore(
