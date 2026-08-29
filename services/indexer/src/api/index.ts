@@ -190,10 +190,7 @@ export function createApp(
   app.use("/api/pools", createPoolsRouter(db));
   app.use("/api/governance", createGovernanceRouter(db));
   app.use("/api/users", createUsersRouter(db));
-
-  if (pg) {
-    app.use("/api/feed", createFeedRouter(pg));
-  }
+  app.use("/api/feed", createFeedRouter(pg ?? db));
 
   const notificationService = pg
     ? new NotificationService({ deviceTokenStore: new PostgresDeviceTokenStore(pg) })

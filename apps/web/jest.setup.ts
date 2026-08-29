@@ -55,7 +55,7 @@ jest.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
-// Mock LinkoraClient
+// Mock LinkoraClient and linkora-sdk utilities
 jest.mock("linkora-sdk", () => ({
   LinkoraClient: jest.fn().mockImplementation(() => ({
     getProfile: jest.fn().mockResolvedValue({
@@ -73,6 +73,7 @@ jest.mock("linkora-sdk", () => ({
     publicKey: new Uint8Array(32),
     privateKey: new Uint8Array(32),
   }),
+  utf8Bytes: (value: string) => Buffer.from(value, "utf8").length,
 }));
 
 // Mock @stellar/stellar-sdk

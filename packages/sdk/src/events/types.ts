@@ -137,20 +137,20 @@ export interface AttestationVerifiedEvent extends BaseLinkoraEvent {
 
 export interface PostReportedEvent extends BaseLinkoraEvent {
   type: "post_reported";
-  post_id: number;
+  post_id: bigint;
   reporter: string;
   stake_amount: bigint;
 }
 
 export interface PostRemovedByModerationEvent extends BaseLinkoraEvent {
   type: "post_removed_by_moderation";
-  post_id: number;
+  post_id: bigint;
   reporter: string;
 }
 
 export interface ReportDismissedEvent extends BaseLinkoraEvent {
   type: "report_dismissed";
-  post_id: number;
+  post_id: bigint;
   reporter: string;
 }
 

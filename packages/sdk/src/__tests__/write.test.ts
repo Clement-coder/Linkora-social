@@ -1,3 +1,4 @@
+import { Account } from "@stellar/stellar-base";
 import { LinkoraClient } from "../client";
 import { InvalidInputError, ValidationError } from "../errors";
 
@@ -271,12 +272,12 @@ describe("prepare*Tx methods (Submittable)", () => {
   const val = (v: unknown) => expect.objectContaining({ _val: v });
 
   it("prepareCreatePostTx fetches sequence and uses prepareTransaction", async () => {
-    jest
-      .spyOn(client as unknown as { getAccountForTx: jest.Mock }, "getAccountForTx")
-      .mockResolvedValue({ _accountId: "GAUTHOR", sequence: "100" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    jest.spyOn(client as any, "getAccountForTx").mockResolvedValue(new Account("GAUTHOR", "100"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     jest.spyOn(client, "prepareTransaction").mockResolvedValue({
       toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" }),
-    } as unknown as ReturnType<typeof client.prepareTransaction>);
+    } as unknown as Awaited<ReturnType<typeof client.prepareTransaction>>);
 
     const result = await client.prepareCreatePostTx("GAUTHOR", "hello");
     expect(result).toBe("PREPARED_XDR");
@@ -289,12 +290,12 @@ describe("prepare*Tx methods (Submittable)", () => {
   });
 
   it("prepareFollowTx fetches sequence and uses prepareTransaction", async () => {
-    jest
-      .spyOn(client as unknown as { getAccountForTx: jest.Mock }, "getAccountForTx")
-      .mockResolvedValue({ _accountId: "GA", sequence: "100" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    jest.spyOn(client as any, "getAccountForTx").mockResolvedValue(new Account("GA", "100"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     jest.spyOn(client, "prepareTransaction").mockResolvedValue({
       toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" }),
-    } as unknown as ReturnType<typeof client.prepareTransaction>);
+    } as unknown as Awaited<ReturnType<typeof client.prepareTransaction>>);
 
     const result = await client.prepareFollowTx("GA", "GB");
     expect(result).toBe("PREPARED_XDR");
