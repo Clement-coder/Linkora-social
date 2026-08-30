@@ -2,7 +2,7 @@ import {
   addOutboxDmMessage,
   confirmPendingPost,
   DmMessage,
-  getCachedPostById,
+  getCachedPostsByIds,
   getDmSyncCursor,
   getPendingPosts,
   markDmMessageFailed,
@@ -37,9 +37,12 @@ export async function fetchAndCachePosts(limit: number, offset: number): Promise
   const indexerPosts = data.posts || [];
   const finalPosts: Post[] = [];
 
-  // 2. Fetch content/profile details for each post, using local cache as much as possible
+  // 2. Fetch content/profile details for each post, using local cache as much as possible.
+  // A single batched lookup replaces one `getCachedPostById` call per post.
+  const cachedById = await getCachedPostsByIds(indexerPosts.map((ip) => String(ip.id)));
+
   for (const ip of indexerPosts) {
-    const cached = await getCachedPostById(String(ip.id));
+    const cached = cachedById.get(String(ip.id));
     let content = cached?.content;
     let username = cached?.username || "stellar_user";
 
