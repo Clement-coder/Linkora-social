@@ -236,6 +236,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   private readonly _timeoutMs: number;
   private readonly _allowHttp: boolean;
   private readonly _horizonUrl?: string;
+  private readonly _rpcServer: rpc.Server;
 
   constructor(config: ClientConfig) {
     super({
@@ -252,14 +253,16 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     this._allowHttp = resolveAllowHttp({ rpcUrl: config.rpcUrl, allowHttp: config.allowHttp });
     this._horizonUrl = config.horizonUrl;
 
+    this._rpcServer = new rpc.Server(this._rpcUrl, { allowHttp: this._allowHttp });
+
     const { autoStart, ...healthCfg } = config.healthCheck ?? {};
-    this._healthMonitor = new ConnectionHealthMonitor(this._rpcUrl, healthCfg);
+    this._healthMonitor = new ConnectionHealthMonitor(this._rpcUrl, healthCfg, this._rpcServer);
     if (autoStart) this._healthMonitor.start();
   }
 
   /** Build an RPC server handle honoring the insecure-HTTP setting. */
   createRpcServer(): rpc.Server {
-    return new rpc.Server(this._rpcUrl, { allowHttp: this._allowHttp });
+    return this._rpcServer;
   }
 
   /**
@@ -364,7 +367,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * ```
    */
   async simulate(method: string, ...args: xdr.ScVal[]): Promise<SimulationResult> {
-    const server = this.createRpcServer();
+    const server = this._rpcServer;
     const contract = new Contract(this._contractId);
     const buildOp = () => contract.call(method, ...args);
 
@@ -456,7 +459,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     sourceAccount: Account,
     ...args: xdr.ScVal[]
   ): Promise<Transaction> {
-    const server = this.createRpcServer();
+    const server = this._rpcServer;
     const contract = new Contract(this._contractId);
 
     const rawTx = new TransactionBuilder(sourceAccount, {
@@ -534,7 +537,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     sourceAccount: Account,
     ops: Array<{ method: string; args: xdr.ScVal[] }>
   ): Promise<Transaction> {
-    const server = this.createRpcServer();
+    const server = this._rpcServer;
     const contract = new Contract(this._contractId);
 
     const tempSource = Keypair.random();
@@ -1913,7 +1916,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     method: string,
     ...args: xdr.ScVal[]
   ): Promise<xdr.ScVal | null> {
-    const server = this.createRpcServer();
+    const server = this._rpcServer;
     const contract = new Contract(contractId);
     const op = contract.call(method, ...args);
 
