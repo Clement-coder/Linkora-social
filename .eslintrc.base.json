@@ -8,6 +8,13 @@
         "argsIgnorePattern": "^_",
         "varsIgnorePattern": "^_"
       }
+    ],
+    "no-warning-comments": [
+      "warn",
+      {
+        "terms": ["todo_dead_code", "fixme_dead", "deadcode", "commented_out"],
+        "location": "anywhere"
+      }
     ]
   },
   "env": {
