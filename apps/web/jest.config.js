@@ -9,6 +9,8 @@ module.exports = {
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
     "^linkora-sdk$": "<rootDir>/../../packages/sdk/src/index.ts",
+    "^@linkora/types/src/(.*)$": "<rootDir>/../../packages/types/src/$1",
+    "^@linkora/types$": "<rootDir>/../../packages/types/src/index.ts",
   },
   transform: {
     "^.+\\.(ts|tsx)$": [

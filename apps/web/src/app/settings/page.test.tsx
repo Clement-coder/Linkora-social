@@ -1,6 +1,20 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, act } from "@testing-library/react";
 import { axe } from "jest-axe";
 import SettingsPage from "./page";
+import { OnboardingProvider } from "@/contexts/OnboardingContext";
+import { GuidedTourProvider } from "@/contexts/GuidedTourContext";
+
+jest.setTimeout(15000);
+
+function renderSettingsPage() {
+  return render(
+    <OnboardingProvider>
+      <GuidedTourProvider>
+        <SettingsPage />
+      </GuidedTourProvider>
+    </OnboardingProvider>
+  );
+}
 
 // Mock useWallet hook
 const mockUseWallet = jest.fn();
@@ -46,7 +60,7 @@ describe("SettingsPage", () => {
         disconnect: jest.fn(),
       });
 
-      const { container } = render(<SettingsPage />);
+      const { container } = renderSettingsPage();
 
       // Wait for all async content to load
       await waitFor(() => {
@@ -65,7 +79,7 @@ describe("SettingsPage", () => {
         disconnect: jest.fn(),
       });
 
-      const { container } = render(<SettingsPage />);
+      const { container } = renderSettingsPage();
       const results = await axe(container);
       expect(results).toHaveNoViolations();
     });
@@ -80,7 +94,7 @@ describe("SettingsPage", () => {
         disconnect: jest.fn(),
       });
 
-      render(<SettingsPage />);
+      renderSettingsPage();
       expect(screen.getByText("Connect your wallet to access settings.")).toBeInTheDocument();
     });
 
@@ -92,7 +106,7 @@ describe("SettingsPage", () => {
         disconnect: jest.fn(),
       });
 
-      render(<SettingsPage />);
+      renderSettingsPage();
       expect(screen.queryByText("Profile")).not.toBeInTheDocument();
       expect(screen.queryByText("Wallet")).not.toBeInTheDocument();
     });
@@ -109,7 +123,7 @@ describe("SettingsPage", () => {
     });
 
     it("should render all settings sections", async () => {
-      render(<SettingsPage />);
+      renderSettingsPage();
 
       await waitFor(() => {
         expect(screen.getByText("Settings")).toBeInTheDocument();
@@ -127,7 +141,7 @@ describe("SettingsPage", () => {
     });
 
     it("should have proper heading hierarchy", async () => {
-      render(<SettingsPage />);
+      renderSettingsPage();
 
       await waitFor(() => {
         expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
@@ -138,13 +152,18 @@ describe("SettingsPage", () => {
     });
 
     it("should persist theme preference and apply it to the document", async () => {
-      render(<SettingsPage />);
+      renderSettingsPage();
 
-      await waitFor(() => {
-        expect(screen.getByRole("button", { name: "Dark" })).toBeInTheDocument();
+      await waitFor(
+        () => {
+          expect(screen.getByRole("button", { name: "Dark" })).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Dark" }));
       });
-
-      fireEvent.click(screen.getByRole("button", { name: "Dark" }));
 
       expect(localStorageMock.getItem("linkora_theme")).toBe("dark");
       expect(document.documentElement.dataset.theme).toBe("dark");

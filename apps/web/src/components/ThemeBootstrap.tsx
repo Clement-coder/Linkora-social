@@ -18,7 +18,10 @@ export function applyThemePreference(theme: ThemePreference) {
 export function getStoredThemePreference(): ThemePreference {
   const stored = localStorage.getItem(THEME_STORAGE_KEY);
   if (isThemePreference(stored)) return stored;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  return "light";
 }
 
 export function storeThemePreference(theme: ThemePreference) {

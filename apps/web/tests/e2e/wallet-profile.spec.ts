@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import {
   injectWalletMock,
   connectWallet,
+  disconnectWallet,
   waitForWalletConnection,
   navigateToProfile,
   MOCK_ADDRESS,
@@ -25,16 +26,15 @@ test.describe("Wallet Connection & Profile Registration", () => {
     expect(address).toBeTruthy();
 
     await navigateToProfile(page, MOCK_ADDRESS);
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("domcontentloaded");
     await expect(page.locator("h1, h2").first()).toBeVisible({ timeout: 10000 });
     expect(page.url()).toContain(MOCK_ADDRESS);
   });
 
   test("disconnect wallet", async ({ page }) => {
     await connectWallet(page);
-    const disconnectButton = page.locator('[data-testid="disconnect-wallet"]').first();
-    await expect(disconnectButton).toBeVisible({ timeout: 10000 });
-    await disconnectButton.click();
+    await disconnectWallet(page);
+    // After disconnect the Connect button should reappear
     await expect(page.locator('[data-testid="connect-wallet"]').first()).toBeVisible({
       timeout: 10000,
     });

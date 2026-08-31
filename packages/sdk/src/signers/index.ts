@@ -1,2 +1,2 @@
-export * from "./freighter";
-export * from "./ledger";
+export * from "./freighter.js";
+export * from "./ledger.js";

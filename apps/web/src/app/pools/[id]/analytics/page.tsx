@@ -52,7 +52,7 @@ export default function PoolAnalyticsPage() {
   const params = useParams();
   const poolId = typeof params.id === "string" ? params.id : null;
   const [state, setState] = useState<AnalyticsState>({ status: "loading" });
-  const [dateRange, setDateRange] = useState<7 | 30>("7d");
+  const [dateRange, setDateRange] = useState<"7d" | "30d">("7d");
 
   const loadAnalytics = useCallback(async () => {
     if (!poolId) {
@@ -175,19 +175,15 @@ export default function PoolAnalyticsPage() {
           </div>
         )}
 
-        {state.status === "loaded" && <AnalyticsDashboard data={state.data} dateRange={dateRange} />}
+        {state.status === "loaded" && (
+          <AnalyticsDashboard data={state.data} dateRange={dateRange} />
+        )}
       </div>
     </main>
   );
 }
 
-function AnalyticsDashboard({
-  data,
-  dateRange,
-}: {
-  data: PoolAnalytics;
-  dateRange: "7d" | "30d";
-}) {
+function AnalyticsDashboard({ data, dateRange }: { data: PoolAnalytics; dateRange: "7d" | "30d" }) {
   const balance = BigInt(data.balance);
   const deposited = BigInt(data.total_deposited);
   const withdrawn = BigInt(data.total_withdrawn);

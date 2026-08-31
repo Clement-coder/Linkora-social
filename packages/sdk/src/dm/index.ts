@@ -5,15 +5,15 @@
  * direct messaging without central key management.
  */
 
-import { LinkoraClient } from "../client";
-import { Keypair } from "@stellar/stellar-sdk";
+import { LinkoraClient } from "../client.js";
+import { Keypair } from "@stellar/stellar-base";
 import {
   generateDmKeypair,
   encryptDirectMessage,
   decryptDirectMessage,
   type DmKeyPair,
-} from "./crypto";
-import { RelayClient, type ConversationMessage } from "./relay";
+} from "./crypto.js";
+import { RelayClient, type ConversationMessage } from "./relay.js";
 
 interface WalletLike {
   networkPassphrase?: string;
@@ -34,17 +34,22 @@ export {
   decryptDirectMessage,
   DecryptionError,
   type DmKeyPair,
-} from "./crypto";
+} from "./crypto.js";
 
 export {
   RelayClient,
   RelayAuthError,
   getConversationId,
+  detectKeyRotation,
   type RelayMessage,
   type ConversationMessage,
   type SendMessageRequest,
   type GetMessagesResponse,
-} from "./relay";
+  type ConnectionState,
+  type ConnectionStateCallback,
+  type RelayClientConfig,
+  type KeyRotationResult,
+} from "./relay.js";
 
 /**
  * High-level DM service that combines contract interaction, encryption, and relay communication
@@ -63,7 +68,7 @@ export class DmService {
       rpcUrl: wallet?.rpcUrl || "https://soroban-testnet.stellar.org",
       contractId: process.env.NEXT_PUBLIC_CONTRACT_ID || "",
     });
-    this.relayClient = new RelayClient(relayUrl);
+    this.relayClient = new RelayClient({ baseUrl: relayUrl });
     this.userAddress = wallet?.address || wallet?.publicKey || "";
     this.wallet = wallet;
   }
@@ -126,7 +131,7 @@ export class DmService {
     }
   }
 
-  async sendMessage(toAddress: string, content: string): Promise<void> {
+  async sendMessage(toAddress: string, content: string, senderKeypair: Keypair): Promise<void> {
     if (!this.keypair) {
       throw new Error("No DM keys available. Generate keys first.");
     }
@@ -152,12 +157,8 @@ export class DmService {
       messageIndex
     );
 
-    // Create a keypair for signing (this is a simplified approach)
-    // In a real implementation, you'd get this from the wallet
-    const signingKeypair = Keypair.random(); // This needs to be the user's actual signing keypair
-
-    // Send via relay
-    await this.relayClient.sendMessage(signingKeypair, toAddress, encrypted, messageIndex);
+    // Send via relay using the caller-provided signing keypair
+    await this.relayClient.sendMessage(senderKeypair, toAddress, encrypted, messageIndex);
   }
 
   connectRealTime() {

@@ -11,9 +11,25 @@
  *   hash      = SHA-256(sender_stellar_address + unix_timestamp_seconds)
  *   signature = Ed25519_sign(freighter_private_key, hash)  — via Freighter signBlob
  *   sent as hex string in the JSON body
+ *
+ * Key rotation support:
+ *   Before fetching messages the caller should invoke `syncWithRotationCheck`
+ *   (or use `fetchMessagesWithRotationCheck` which wraps it).  When a peer's
+ *   on-chain X25519 key has changed since the last sync, all cached session
+ *   keys are invalidated so conversation keys are re-derived from the new
+ *   key agreement, and the sync cursor is reset so messages encrypted under
+ *   the new key are fetched.
  */
 
 import { bytesToHex, bytesToBase64, base64ToBytes, createConversationId } from "./crypto";
+import { getDmKey } from "./contract";
+import {
+  hasKeyRotated,
+  recordKeyRotation,
+  invalidateAllSessionKeys,
+  storePublishedKey,
+  loadPublishedKey,
+} from "./storage";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -130,14 +146,14 @@ export function connectRelayWs(address: string) {
   if (ws) return;
   const wsUrl = RELAY_URL.replace(/^http/, "ws") + `/ws?address=${address}`;
   ws = new WebSocket(wsUrl);
-  
+
   ws.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data);
       messageListeners.forEach((listener) => listener(payload));
     } catch (e) {}
   };
-  
+
   ws.onclose = () => {
     ws = null;
   };
@@ -152,10 +168,59 @@ export function onRelayMessage(listener: (payload: any) => void) {
 
 export function sendTypingStatus(recipient: string) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: "typing_status",
-      recipient
-    }));
+    ws.send(
+      JSON.stringify({
+        type: "typing_status",
+        recipient,
+      })
+    );
   }
 }
 
+// ── Key rotation detection & re-sync ─────────────────────────────────────────
+
+/**
+ * Check whether `peerAddress` has rotated their on-chain DM key since we
+ * last synced.  If a rotation is detected, every cached session key for
+ * `myAddress` is invalidated and the sync cursor is reset so the next
+ * message fetch re-downloads ciphertexts encrypted under the new key.
+ *
+ * @returns `true` if a rotation was detected and caches were cleared.
+ */
+export async function checkPeerKeyRotation(
+  myAddress: string,
+  peerAddress: string
+): Promise<boolean> {
+  const onChainKey = await getDmKey(peerAddress);
+  if (!onChainKey) return false;
+
+  if (hasKeyRotated(peerAddress, onChainKey)) {
+    invalidateAllSessionKeys(myAddress);
+    recordKeyRotation(peerAddress, onChainKey);
+    return true;
+  }
+
+  // First time we see this peer – record the key so future rotations
+  // can be detected.
+  if (!loadPublishedKey(peerAddress)) {
+    storePublishedKey(peerAddress, onChainKey);
+  }
+
+  return false;
+}
+
+/**
+ * Higher-level wrapper that checks for a peer key rotation, then fetches
+ * relay messages for the conversation.
+ *
+ * Use this instead of a raw `fetchRelayMessages` call so that cached
+ * session keys are always kept in sync with the on-chain key state.
+ */
+export async function fetchMessagesWithRotationCheck(
+  myAddress: string,
+  theirAddress: string,
+  limit = 50
+): Promise<RelayMessage[]> {
+  await checkPeerKeyRotation(myAddress, theirAddress);
+  return fetchRelayMessages(myAddress, theirAddress, limit);
+}

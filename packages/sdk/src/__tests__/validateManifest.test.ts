@@ -32,3 +32,36 @@ describe("validateManifest", () => {
     expect(() => validateManifest(invalid)).toThrow(InvalidManifestError);
   });
 });
+
+it("should enforce max length on entryPoint field", () => {
+  const invalid = {
+    name: "Test Mini App",
+    version: "1.0.0",
+    entryPoint: "https://example.com/" + "x".repeat(3000),
+    permissions: ["wallet.read"],
+  };
+  expect(() => validateManifest(invalid)).toThrow(InvalidManifestError);
+});
+
+it("should enforce max length on icon data URL", () => {
+  const invalid = {
+    name: "Test Mini App",
+    version: "1.0.0",
+    entryPoint: "https://example.com/mini",
+    icon: "data:image/png;base64," + "A".repeat(110000),
+    permissions: ["wallet.read"],
+  };
+  expect(() => validateManifest(invalid)).toThrow(InvalidManifestError);
+});
+
+it("should accept valid icon data URL within size limit", () => {
+  const valid = {
+    name: "Test Mini App",
+    version: "1.0.0",
+    entryPoint: "https://example.com/mini",
+    icon: "data:image/png;base64," + "A".repeat(5000),
+    permissions: ["wallet.read"],
+  };
+  const result = validateManifest(valid);
+  expect(result).toEqual(valid);
+});

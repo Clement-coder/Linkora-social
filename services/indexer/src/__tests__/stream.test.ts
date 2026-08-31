@@ -145,6 +145,186 @@ describe("streamEvents — 429 backpressure", () => {
       )
     ).resolves.toBeUndefined();
   });
+
+  it("does not count serialization conflicts toward the stream circuit breaker", async () => {
+    const controller = new AbortController();
+    let fetchCalls = 0;
+    let processCalls = 0;
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      return rpcResult(makeRawEvents(10, 1), 10) as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const process = async (events: RawEvent[]): Promise<number> => {
+      processCalls += 1;
+      if (processCalls <= 10) {
+        const error = new Error("serialization failure") as Error & { code: string };
+        error.code = "40001";
+        throw error;
+      }
+      controller.abort();
+      return events[events.length - 1].ledger;
+    };
+
+    await streamEvents(
+      {
+        rpcUrl: "http://rpc",
+        contractId: "C1",
+        startLedger: 10,
+        minPollMs: 0,
+        maxPollMs: 0,
+      },
+      process,
+      controller.signal,
+      { fetchImpl, sleep: async () => {}, rateLimiter: nonBlockingLimiter() }
+    );
+
+    expect(processCalls).toBe(11);
+    expect(fetchCalls).toBe(11);
+  });
+});
+
+describe("streamEvents — error-type-aware circuit breaker (#1179)", () => {
+  let errorSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  /** Metric names emitted through the console during the run. */
+  function emittedMetrics(): string[] {
+    return errorSpy.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === "string" && arg.startsWith("{"))
+      .map((line) => {
+        try {
+          return JSON.parse(line).metric as string;
+        } catch {
+          return "";
+        }
+      })
+      .filter(Boolean);
+  }
+
+  it("survives 15 consecutive ECONNREFUSED errors and keeps streaming", async () => {
+    // The exact scenario from the issue: an RPC rolling restart. Previously
+    // the 10th failure tripped the breaker and ended the stream for good.
+    const controller = new AbortController();
+    let fetchCalls = 0;
+    let processCalls = 0;
+
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      if (fetchCalls <= 15) {
+        const err = new Error("connect ECONNREFUSED 127.0.0.1:8000") as Error & { code: string };
+        err.code = "ECONNREFUSED";
+        throw err;
+      }
+      return rpcResult(makeRawEvents(10, 1), 10) as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const process = async (events: RawEvent[]): Promise<number> => {
+      processCalls += 1;
+      controller.abort();
+      return events[events.length - 1].ledger;
+    };
+
+    await streamEvents(
+      {
+        rpcUrl: "http://rpc",
+        contractId: "C1",
+        startLedger: 10,
+        minPollMs: 0,
+        maxPollMs: 0,
+        maxRetries: 0,
+      },
+      process,
+      controller.signal,
+      { fetchImpl, sleep: async () => {}, rateLimiter: nonBlockingLimiter() }
+    );
+
+    // The stream reached the successful fetch instead of stopping at 10.
+    expect(fetchCalls).toBe(16);
+    expect(processCalls).toBe(1);
+    expect(emittedMetrics()).not.toContain("stream_circuit_open");
+  });
+
+  it("opens on persistent unclassified errors at the configured threshold", async () => {
+    const controller = new AbortController();
+    let fetchCalls = 0;
+
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      if (fetchCalls >= 6) controller.abort();
+      throw new TypeError("cannot read properties of undefined");
+    }) as unknown as typeof fetch;
+
+    await streamEvents(
+      {
+        rpcUrl: "http://rpc",
+        contractId: "C1",
+        startLedger: 10,
+        minPollMs: 0,
+        maxPollMs: 0,
+        maxRetries: 0,
+        circuitBreakerThreshold: 3,
+        circuitBreakerProbeIntervalMs: 0,
+      },
+      async (events) => events[events.length - 1].ledger,
+      controller.signal,
+      { fetchImpl, sleep: async () => {}, rateLimiter: nonBlockingLimiter() }
+    );
+
+    const metrics = emittedMetrics();
+    expect(metrics).toContain("stream_circuit_open");
+    expect(metrics).toContain("stream_circuit_half_open");
+  });
+
+  it("recovers through a half-open probe instead of terminating the stream", async () => {
+    const controller = new AbortController();
+    let fetchCalls = 0;
+    let processCalls = 0;
+
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      // Three persistent failures trip the breaker; the probe then succeeds.
+      if (fetchCalls <= 3) throw new TypeError("unclassified defect");
+      return rpcResult(makeRawEvents(10, 1), 10) as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const process = async (events: RawEvent[]): Promise<number> => {
+      processCalls += 1;
+      controller.abort();
+      return events[events.length - 1].ledger;
+    };
+
+    await streamEvents(
+      {
+        rpcUrl: "http://rpc",
+        contractId: "C1",
+        startLedger: 10,
+        minPollMs: 0,
+        maxPollMs: 0,
+        maxRetries: 0,
+        circuitBreakerThreshold: 3,
+        circuitBreakerProbeIntervalMs: 0,
+      },
+      process,
+      controller.signal,
+      { fetchImpl, sleep: async () => {}, rateLimiter: nonBlockingLimiter() }
+    );
+
+    // The stream carried on past the trip and processed the probe's batch.
+    expect(processCalls).toBe(1);
+    const metrics = emittedMetrics();
+    expect(metrics).toContain("stream_circuit_open");
+    expect(metrics).toContain("stream_circuit_half_open");
+  });
 });
 
 describe("RpcError", () => {
@@ -173,10 +353,18 @@ describe("backfillStartupGap — 100-ledger gap recovery", () => {
     let fetchCalls = 0;
     const fetchImpl = (async (_url: string, opts: RequestInit) => {
       fetchCalls++;
-      const body = JSON.parse(opts.body as string) as { params?: { startLedger?: number; pagination?: { cursor?: string } } };
-      const startLedger = body.params?.startLedger ?? 0;
-      // Return events for the requested range (max 100 per page)
-      const page = gapEvents.filter((e) => e.ledger! >= startLedger);
+      const body = JSON.parse(opts.body as string) as {
+        params?: { startLedger?: number; pagination?: { cursor?: string } };
+      };
+      const cursor = body.params?.pagination?.cursor;
+      let page = gapEvents;
+      if (cursor) {
+        // Respect cursor-based pagination: only return events after it.
+        page = page.filter((e) => e.pagingToken! > cursor);
+      } else {
+        const startLedger = body.params?.startLedger ?? 0;
+        page = page.filter((e) => e.ledger! >= startLedger);
+      }
       return {
         ok: true,
         status: 200,
