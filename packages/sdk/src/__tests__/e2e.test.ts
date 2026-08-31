@@ -1,5 +1,5 @@
 import { LinkoraClient } from "../client";
-import { Keypair, Networks } from "@stellar/stellar-sdk";
+import { Keypair, Networks } from "@stellar/stellar-base";
 
 function isNetworkError(e: unknown): boolean {
   if (typeof e !== "object" || e === null) return false;
@@ -22,16 +22,16 @@ describe("SDK E2E Tests against Stellar Testnet", () => {
   });
 
   describe("Contract State (read-only)", () => {
-    test("getPostCount returns a non-negative number", async () => {
-      let count: number;
+    test("getPostCount returns a non-negative bigint", async () => {
+      let count: bigint;
       try {
         count = await client.getPostCount();
       } catch (e: unknown) {
         if (isNetworkError(e)) return;
         throw e;
       }
-      expect(typeof count).toBe("number");
-      expect(count).toBeGreaterThanOrEqual(0);
+      expect(typeof count).toBe("bigint");
+      expect(count).toBeGreaterThanOrEqual(0n);
     });
 
     test("getProfile returns null for a random address", async () => {

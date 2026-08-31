@@ -6,8 +6,8 @@ module.exports = {
   // Transform ESM-only packages through ts-jest so CJS jest can handle them
   transformIgnorePatterns: ["/node_modules/(?!(.*uuid|.*@noble)/)"],
   transform: {
-    "^.+\\.tsx?$": ["ts-jest", { isolatedModules: true }],
+    "^.+\\.tsx?$": ["ts-jest"],
     // Bare JS files in ESM-only node_modules also need transforming
-    "^.+\\.js$": ["ts-jest", { useESM: false, isolatedModules: true }],
+    "^.+\\.js$": ["ts-jest", { useESM: false }],
   },
 };

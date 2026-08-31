@@ -1,33 +1,27 @@
-/**
- * Linkora Analytics Oracle
- *
- * Runs on a ledger-window schedule:
- *   1. Queries the indexer PostgreSQL DB for per-creator activity in the window.
- *   2. Encodes each creator's analytics as a CBOR report.
- *   3. Signs the SHA-256 of the CBOR with the oracle Ed25519 key.
- *   4. Submits `verify_analytics_attestation` to the Soroban contract.
- *   5. Caches the latest signed attestation per creator.
- *
- * Exposes GET /attestations/:creator returning the latest signed report + signature.
- */
-
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
+import helmet from "helmet";
 import { Pool } from "pg";
-import { Keypair } from "@stellar/stellar-sdk";
+import { Keypair, rpc as StellarRpc } from "@stellar/stellar-sdk";
 import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
-import { rateLimit } from "express-rate-limit";
+import { randomUUID } from "crypto";
 import { encodeReport } from "./codec.js";
-import { signReport } from "./signer.js";
+import { Signer } from "./signer.js";
 import { fetchCreatorStats } from "./db.js";
 import { submitAttestation } from "./submitter.js";
 import { AnalyticsReport, SignedAttestation } from "./types.js";
 import { logger } from "./logger.js";
+import { rateLimiter, initRateLimiter } from "./middleware/rate-limiter.js";
+import { loadRateLimitConfig } from "./config.js";
+import { createHealthRouter } from "./routes/health.js";
+import { createAdminRouter } from "./routes/admin.js";
+import { validateParams } from "./middleware/validate.js";
+import { AttestationCache } from "./attestation-cache.js";
+import { createKeystore, Keystore } from "./secrets.js";
+import { z } from "zod";
+import { notFoundError, isAppError } from "@linkora/types/src/errors.js";
 
-// Wire sha512 for @noble/ed25519 synchronous API
 ed.etc.sha512Sync = (...m) => sha512(ed.etc.concatBytes(...m));
-
-// ── Config ────────────────────────────────────────────────────────────────────
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -35,42 +29,81 @@ function requireEnv(name: string): string {
   return v;
 }
 
+// Validate the rate-limiting environment before anything else binds a port:
+// this throws when NODE_ENV=production and no shared Redis store is
+// configured, so a scaled deployment can never boot with per-replica limits.
+loadRateLimitConfig();
+
 const DATABASE_URL = requireEnv("DATABASE_URL");
 const SOROBAN_RPC_URL = requireEnv("SOROBAN_RPC_URL");
 const CONTRACT_ID = requireEnv("CONTRACT_ID");
-const ORACLE_PRIVATE_KEY_HEX = requireEnv("ORACLE_PRIVATE_KEY_HEX");
 const ORACLE_NAME = process.env["ORACLE_NAME"] ?? "default";
 const WINDOW_LEDGERS = BigInt(process.env["WINDOW_LEDGERS"] ?? "1000");
 const PORT = parseInt(process.env["PORT"] ?? "4000", 10);
-const NETWORK_PASSPHRASE =
-  process.env["NETWORK_PASSPHRASE"] ?? "Test SDF Network ; September 2015";
+const NETWORK_PASSPHRASE = process.env["NETWORK_PASSPHRASE"] ?? "Test SDF Network ; September 2015";
+const ATTESTATION_CACHE_MAX_SIZE = parseInt(
+  process.env["ATTESTATION_CACHE_MAX_SIZE"] ?? "10000",
+  10
+);
+const ATTESTATION_CACHE_TTL_MS = parseInt(process.env["ATTESTATION_CACHE_TTL_MS"] ?? "3600000", 10);
+const SHUTDOWN_DRAIN_TIMEOUT_MS = parseInt(process.env["SHUTDOWN_DRAIN_TIMEOUT_MS"] ?? "30000", 10);
 
-// ── Init ──────────────────────────────────────────────────────────────────────
-
-const oraclePrivateKey = Buffer.from(ORACLE_PRIVATE_KEY_HEX, "hex");
-// Stellar keypair derived from the same 32-byte seed for fee payment.
-const oracleKeypair = Keypair.fromRawEd25519Seed(oraclePrivateKey);
+// Load the signing key from the configured secrets backend (a mounted secret
+// file, or — for local dev only — an env var). The raw bytes are handed to the
+// Signer and immediately zeroed on the heap, so they do not persist in memory.
+const keystore: Keystore = createKeystore();
+const oracleSeed = keystore.loadSeed();
+const oracleSigner = new Signer(oracleSeed);
+keystore.zeroise();
 
 const db = new Pool({ connectionString: DATABASE_URL });
 
-// In-memory cache: creator address -> latest attestation
-const attestationCache = new Map<string, SignedAttestation>();
+/** Shared rpc.Server instance — created once at startup and reused for all
+ *  Soroban RPC calls (ledger polling + attestation submission). */
+const rpcServer = new StellarRpc.Server(SOROBAN_RPC_URL);
 
-// ── Analytics loop ────────────────────────────────────────────────────────────
+const attestationCache = new AttestationCache<SignedAttestation>({
+  maxSize: ATTESTATION_CACHE_MAX_SIZE,
+  ttlMs: ATTESTATION_CACHE_TTL_MS,
+});
+
+// Bind the cache to the current signer key. If the key rotates (reload of the
+// signing key), calling setSignerId again with the new fingerprint clears every
+// cached signature produced under the previous key.
+const signerId = oracleSigner.fingerprint();
+attestationCache.setSignerId(signerId);
 
 let lastWindowEnd = BigInt(0);
 
+function generateRequestId(): string {
+  return randomUUID();
+}
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Request {
+      requestId: string;
+    }
+  }
+}
+
 async function runWindow(windowStart: bigint, windowEnd: bigint): Promise<void> {
-  logger.info({ windowStart: windowStart.toString(), windowEnd: windowEnd.toString() }, "Computing analytics for ledger window");
+  logger.info(
+    { windowStart: windowStart.toString(), windowEnd: windowEnd.toString() },
+    "Computing analytics for ledger window"
+  );
 
   const stats = await fetchCreatorStats(db, windowStart, windowEnd);
   if (stats.length === 0) {
-    logger.info({ windowStart: windowStart.toString(), windowEnd: windowEnd.toString() }, "No active creators in window, skipping");
+    logger.info(
+      { windowStart: windowStart.toString(), windowEnd: windowEnd.toString() },
+      "No active creators in window, skipping"
+    );
     return;
   }
 
   for (const s of stats) {
-    // Decode the creator's Stellar address to its raw 32-byte public key.
     let creatorBytes: Uint8Array;
     try {
       creatorBytes = Keypair.fromPublicKey(s.creatorAddress).rawPublicKey();
@@ -91,19 +124,31 @@ async function runWindow(windowStart: bigint, windowEnd: bigint): Promise<void> 
     };
 
     const reportCbor = encodeReport(report);
-    const { signature, reportHash } = signReport(reportCbor, oraclePrivateKey);
+    const { signature, reportHash } = oracleSigner.signReport(reportCbor);
 
-    // Submit on-chain.
+    // Audit log: every signing includes the public-key fingerprint and the
+    // ledger window, never the private key material.
+    logger.info(
+      {
+        fingerprint: oracleSigner.fingerprint(),
+        creatorAddress: s.creatorAddress,
+        windowStart: windowStart.toString(),
+        windowEnd: windowEnd.toString(),
+        reportHash: reportHash.toString("hex"),
+      },
+      "Attestation signed"
+    );
+
     let txHash: string;
     try {
       txHash = await submitAttestation(
-        SOROBAN_RPC_URL,
+        rpcServer,
         NETWORK_PASSPHRASE,
         CONTRACT_ID,
         ORACLE_NAME,
         reportCbor,
         signature,
-        oracleKeypair,
+        oracleSigner.keypair(),
         s.creatorAddress,
         windowStart,
         windowEnd
@@ -114,7 +159,6 @@ async function runWindow(windowStart: bigint, windowEnd: bigint): Promise<void> 
       continue;
     }
 
-    // Cache for API.
     attestationCache.set(s.creatorAddress, {
       oracleName: ORACLE_NAME,
       reportCbor,
@@ -128,93 +172,77 @@ async function runWindow(windowStart: bigint, windowEnd: bigint): Promise<void> 
 }
 
 async function scheduleLoop(currentLedger: bigint): Promise<void> {
-  const windowStart = lastWindowEnd === BigInt(0) ? currentLedger - WINDOW_LEDGERS : lastWindowEnd + BigInt(1);
+  const windowStart =
+    lastWindowEnd === BigInt(0) ? currentLedger - WINDOW_LEDGERS : lastWindowEnd + BigInt(1);
   const windowEnd = currentLedger;
 
   if (windowEnd <= windowStart) {
     return;
   }
 
+  // Window-start invalidation: cached attestations reference the *previous*
+  // report window, which is now closed. Drop them so a stale attestation is
+  // never served once the oracle begins covering the new window.
+  attestationCache.beginWindow(windowStart, windowEnd);
+
   lastWindowEnd = windowEnd;
   await runWindow(windowStart, windowEnd);
 }
 
-// ── REST API ──────────────────────────────────────────────────────────────────
-
 const app = express();
-const SERVICE_VERSION = process.env["npm_package_version"] ?? "0.1.0";
-const COMMIT_SHA = process.env["COMMIT_SHA"] ?? "unknown";
+app.use(helmet());
+app.set("trust proxy", 1); // trust first proxy
 const startTime = Date.now();
 
+let started = false;
+let startedAt: string | null = null;
+let shuttingDown = false;
+
+function markStarted(): void {
+  if (started) return;
+  started = true;
+  startedAt = new Date().toISOString();
+}
+
+function requestIdMiddleware(req: Request, _res: Response, next: NextFunction): void {
+  const existing = req.headers["x-request-id"];
+  const raw = Array.isArray(existing) ? existing[0] : existing;
+  const id = (typeof raw === "string" ? raw : null) ?? generateRequestId();
+  req.requestId = id;
+  next();
+}
+
 // ── Health endpoints ──────────────────────────────────────────────────────────
+// Liveness / readiness / startup probes — see routes/health.ts for details.
 
-app.get("/health", async (_req, res) => {
-  const uptime = Math.floor((Date.now() - startTime) / 1000);
+app.use(requestIdMiddleware);
 
-  let dbStatus = "disconnected";
-  try { await db.query("SELECT 1"); dbStatus = "connected"; } catch { /* */ }
+app.use(
+  createHealthRouter({
+    db,
+    rpcUrl: SOROBAN_RPC_URL,
+    startTime,
+    isStarted: () => started,
+    startedAt: () => startedAt,
+    isShuttingDown: () => shuttingDown,
+  })
+);
 
-  let rpcStatus = "unreachable";
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 3000);
-    await fetch(SOROBAN_RPC_URL, {
-      method: "POST", signal: ctrl.signal,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getLatestLedger", params: [] }),
-    }).finally(() => clearTimeout(t));
-    rpcStatus = "reachable";
-  } catch { /* */ }
+// Per-IP rate limiting applied to attestation-serving endpoints. See
+// services/analytics-oracle/src/middleware/rate-limiter.ts and config.ts.
+app.use(rateLimiter);
 
-  const ok = dbStatus === "connected" && rpcStatus === "reachable";
-  res.status(ok ? 200 : 503).json({
-    status: ok ? "ok" : "degraded",
-    uptime,
-    version: SERVICE_VERSION,
-    commit: COMMIT_SHA,
-    db: dbStatus,
-    rpc: rpcStatus,
-  });
+const creatorParamsSchema = z.object({
+  creator: z.string().regex(/^G[A-Z2-7]{55}$/, "Invalid Stellar address format"),
 });
 
-app.get("/health/ready", async (_req, res) => {
-  try {
-    await db.query("SELECT 1");
-    res.json({ status: "ready" });
-  } catch {
-    res.status(503).json({ status: "not ready", reason: "db unavailable" });
-  }
-});
-
-app.get("/health/live", (_req, res) => {
-  res.json({ status: "live" });
-});
-
-const RATE_LIMIT_RPM = parseInt(process.env.RATE_LIMIT_RPM || "100", 10);
-
-const apiLimiter = rateLimit({
-  windowMs: 60_000,
-  limit: RATE_LIMIT_RPM,
-  standardHeaders: "draft-8",
-  legacyHeaders: false,
-  handler: (_req, res) => {
-    res.status(429).json({
-      error: "Too Many Requests",
-      code: "RATE_LIMIT_EXCEEDED",
-    });
-  },
-});
-
-app.use(apiLimiter);
-
-/**
- * GET /attestations/:creator
- * Returns the latest signed attestation for a creator address.
- */
-app.get("/attestations/:creator", (req, res) => {
-  const att = attestationCache.get(req.params["creator"] ?? "");
+app.get("/attestations/:creator", validateParams(creatorParamsSchema), (req, res) => {
+  const { creator } = req.params;
+  const att = attestationCache.get(creator as string);
   if (!att) {
-    res.status(404).json({ error: "no attestation found for this creator" });
+    const err = notFoundError("no attestation found for this creator");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    res.status(err.statusCode).json(err.toJSON((req as any).requestId));
     return;
   }
 
@@ -238,39 +266,166 @@ app.get("/attestations/:creator", (req, res) => {
   });
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok" }));
+app.get("/metrics/cache", (_req, res) => {
+  res.json(attestationCache.getStats());
+});
+
+// ── Admin endpoints ───────────────────────────────────────────────────────────
+// Authenticated key-rotation API. Only reachable with a valid ADMIN_SECRET.
+
+app.use(
+  createAdminRouter({
+    signer: oracleSigner,
+    keystore,
+    invalidateCache: (fingerprint) => attestationCache.setSignerId(fingerprint),
+    isReady: () => started,
+  })
+);
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars
+app.use((err: Error, req: any, res: Response, _next: NextFunction): void => {
+  logger.error({ requestId: req.requestId, err }, "Unhandled error");
+
+  const statusCode = isAppError(err) ? err.statusCode : 500;
+  const code = isAppError(err) ? err.code : "INTERNAL_ERROR";
+  const message = process.env.NODE_ENV === "development" ? err.message : "Internal server error";
+
+  res.status(statusCode).json({
+    error: {
+      code,
+      message,
+      requestId: req.requestId,
+    },
+  });
+});
+
 async function main(): Promise<void> {
-  const pubkeyHex = Buffer.from(ed.getPublicKey(oraclePrivateKey)).toString("hex");
-  logger.info({ pubkeyHex, stellarAddress: oracleKeypair.publicKey(), contractId: CONTRACT_ID, windowLedgers: WINDOW_LEDGERS.toString() }, "Oracle starting");
+  const stellarAddress = oracleSigner.stellarPublicKey();
+  logger.info(
+    {
+      pubkeyHex: oracleSigner.fingerprint(),
+      stellarAddress,
+      contractId: CONTRACT_ID,
+      windowLedgers: WINDOW_LEDGERS.toString(),
+      cacheMaxSize: ATTESTATION_CACHE_MAX_SIZE,
+      cacheTtlMs: ATTESTATION_CACHE_TTL_MS,
+      keySource: keystore.source,
+    },
+    "Oracle starting"
+  );
 
-  app.listen(PORT, () => logger.info({ port: PORT }, "Oracle API listening"));
+  // Initialise rate limiter (upgrades to Redis store when REDIS_URL is set).
+  await initRateLimiter();
 
-  // Poll every WINDOW_LEDGERS * 5s for simplicity. In production, subscribe
-  // to the indexer's event bus WebSocket for exact ledger-close events.
+  const httpServer = app.listen(PORT, () => {
+    logger.info({ port: PORT }, "Oracle API listening");
+    markStarted();
+  });
+
+  let pollInterval: ReturnType<typeof setInterval> | null = null;
+  // Promise for the window tick currently in flight, so shutdown can wait for
+  // in-progress attestation submissions to complete before closing resources.
+  let currentTick: Promise<void> = Promise.resolve();
+
+  async function gracefulShutdown(signal: string): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(
+      { signal, drainTimeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS },
+      "Oracle shutting down — failing readiness probe"
+    );
+
+    // Force-exit if draining takes longer than the configured timeout.
+    const forceExitTimer = setTimeout(() => {
+      logger.error(
+        { drainTimeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS },
+        "Drain timeout exceeded — forcing exit"
+      );
+      process.exit(1);
+    }, SHUTDOWN_DRAIN_TIMEOUT_MS);
+    forceExitTimer.unref();
+
+    try {
+      // 1. Stop scheduling new window ticks.
+      if (pollInterval !== null) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+
+      // 2. Stop accepting new HTTP connections and drain existing ones.
+      const httpClosed = new Promise<void>((resolve) => {
+        httpServer.close((err) => {
+          if (err) logger.warn({ err }, "Error while closing HTTP server");
+          resolve();
+        });
+      });
+
+      // 3. Wait for the in-flight window tick (attestation submissions) to
+      //    finish. tick() handles its own errors, but guard anyway.
+      await currentTick.catch(() => undefined);
+      logger.info("In-flight window tick completed");
+
+      await httpClosed;
+      logger.info("HTTP server closed");
+
+      // 4. Close the PostgreSQL pool once nothing can issue new queries.
+      await db.end();
+      logger.info("PostgreSQL pool closed");
+
+      // 5. Zero the private key off the heap before exiting.
+      oracleSigner.dispose();
+      keystore.zeroise();
+
+      clearTimeout(forceExitTimer);
+      logger.info({ signal }, "Graceful shutdown complete");
+      process.exit(0);
+    } catch (err) {
+      logger.error({ err }, "Error during graceful shutdown");
+      process.exit(1);
+    }
+  }
+  process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
+
   const pollMs = Number(WINDOW_LEDGERS) * 5_000;
   logger.info({ pollIntervalMs: pollMs }, "Oracle polling interval set");
 
-  const { rpc: StellarRpc } = await import("@stellar/stellar-sdk");
-  const server = new StellarRpc.Server(SOROBAN_RPC_URL);
+  // Periodically sweep stale TTL entries so memory is reclaimed even for
+  // creators that are never queried again after their attestation is stored.
+  // Run every quarter of the TTL (minimum every 5 minutes).
+  const purgeIntervalMs = Math.max(ATTESTATION_CACHE_TTL_MS / 4, 5 * 60 * 1000);
+  setInterval(() => {
+    const evicted = attestationCache.purgeExpired();
+    if (evicted > 0) {
+      logger.info({ evicted, ...attestationCache.getStats() }, "Attestation cache TTL sweep");
+    }
+  }, purgeIntervalMs).unref(); // unref so the timer does not prevent clean shutdown
 
   const tick = async () => {
     try {
-      const info = await server.getLatestLedger();
+      const info = await rpcServer.getLatestLedger();
       await scheduleLoop(BigInt(info.sequence));
     } catch (err) {
       logger.error({ err }, "Oracle tick error");
     }
   };
 
-  // Run once immediately, then on interval.
-  await tick();
-  setInterval(tick, pollMs);
+  // Track the running tick so gracefulShutdown can await its completion.
+  const runTick = (): Promise<void> => {
+    if (shuttingDown) return currentTick;
+    currentTick = tick();
+    return currentTick;
+  };
+
+  await runTick();
+  pollInterval = setInterval(() => void runTick(), pollMs);
 }
 
 main().catch((err) => {
   logger.error({ err }, "Oracle fatal error");
+  keystore.zeroise();
+  oracleSigner.dispose();
   process.exit(1);
 });

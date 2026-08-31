@@ -20,9 +20,11 @@ import {
   Contract,
   Address,
   rpc as StellarRpc,
+  nativeToScVal,
 } from "@stellar/stellar-sdk";
 import { signTransaction } from "@stellar/freighter-api";
 import { LinkoraClient } from "linkora-sdk";
+import { buildSignAndSubmit } from "@/lib/tx";
 
 const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ID || "CDUMMY";
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || "https://soroban-testnet.stellar.org";
@@ -73,6 +75,12 @@ export default function ProfilePage() {
     followersCount: state.status === "success" ? state.data.followersCount : 0,
     followingCount: state.status === "success" ? state.data.followingCount : 0,
   });
+
+  //  const followState_2 = useOptimisticFollow(currentUserAddress, address, {
+  //   isFollowing: state.status === "success" ? state.data.isFollowing : false,
+  //   followersCount: state.status === "success" ? state.data.followersCount : 0,
+  //   followingCount: state.status === "success" ? state.data.followingCount : 0,
+  // });
 
   /* ── Live event subscriptions ───────────────────────────────────────── */
 
@@ -192,17 +200,28 @@ export default function ProfilePage() {
     if (!currentUserAddress) return;
     setBlocking(true);
     try {
-      const client = new LinkoraClient({
-        contractId: process.env.NEXT_PUBLIC_CONTRACT_ID || "CDUMMY",
-        rpcUrl: process.env.NEXT_PUBLIC_RPC_URL || "https://soroban-testnet.stellar.org",
-      });
-      const _txXdr = isBlocked
-        ? client.unblockUser(currentUserAddress, address)
-        : client.blockUser(currentUserAddress, address);
+      await buildSignAndSubmit(
+        isBlocked ? "unblock_user" : "block_user",
+        [Address.fromString(currentUserAddress).toScVal(), Address.fromString(address).toScVal()],
+        currentUserAddress,
+        {
+          contractId: CONTRACT_ID,
+          rpcUrl: RPC_URL,
+          networkPassphrase: NETWORK_PASSPHRASE,
+        }
+      );
       setIsBlocked((prev) => !prev);
+      // Keep the shared blocked list (/settings) in sync so unblocking or
+      // blocking from a profile card is reflected immediately everywhere.
+      if (isBlocked) {
+        removeFromBlockedList(address);
+      } else {
+        addToBlockedList(address);
+      }
       setMenuOpen(false);
     } catch (error) {
       console.error("Block/unblock failed:", error);
+      alert(`Failed to ${isBlocked ? "unblock" : "block"} user. Please try again.`);
     } finally {
       setBlocking(false);
     }

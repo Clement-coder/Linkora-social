@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { LinkoraClient } from "../client";
 import { SimulationError } from "../errors";
-import { Account } from "@stellar/stellar-sdk";
+import { Account } from "@stellar/stellar-base";
 
 const mockCall = jest.fn();
 const mockBuild = jest.fn();
@@ -10,16 +10,23 @@ const mockToXDR = jest.fn();
 const mockAddOperation = jest.fn();
 const mockSetTimeout = jest.fn();
 const mockSimulateTransaction = jest.fn();
+const mockAssembleBuild = jest.fn();
+const mockInvokeHostFunctionOp = jest.fn();
 
-jest.mock("@stellar/stellar-sdk", () => ({
-  rpc: {
-    Server: jest.fn(() => ({ simulateTransaction: mockSimulateTransaction })),
-    Api: {
-      isSimulationError: jest.fn((result) => result._isError === true),
-      isSimulationSuccess: jest.fn((result) => result._isSuccess === true),
-    },
+jest.mock("@stellar/stellar-sdk/rpc", () => ({
+  Server: jest.fn(() => ({ simulateTransaction: mockSimulateTransaction })),
+  Api: {
+    isSimulationError: jest.fn((result) => result._isError === true),
+    isSimulationSuccess: jest.fn((result) => result._isSuccess === true),
   },
-  Contract: jest.fn(() => ({ call: mockCall })),
+  assembleTransaction: jest.fn(() => ({ build: mockAssembleBuild })),
+}));
+
+jest.mock("@stellar/stellar-base", () => ({
+  Contract: jest.fn(() => ({
+    call: mockCall,
+    address: () => ({ toScAddress: () => ({ _scAddress: true }) }),
+  })),
   nativeToScVal: jest.fn((val: unknown, opts?: unknown) => ({
     _type: "scval",
     _val: val,
@@ -30,7 +37,11 @@ jest.mock("@stellar/stellar-sdk", () => ({
     addOperation: mockAddOperation,
     setTimeout: mockSetTimeout,
     setSorobanData: jest.fn().mockReturnThis(),
+    build: mockBuild,
   })),
+  Operation: {
+    invokeHostFunction: (...args: unknown[]) => mockInvokeHostFunctionOp(...args),
+  },
   SorobanDataBuilder: jest.fn(),
   Transaction: jest.fn(),
   Account: jest.fn(),
@@ -38,7 +49,12 @@ jest.mock("@stellar/stellar-sdk", () => ({
     random: jest.fn(() => ({ publicKey: () => "GWRITEKEYXXXXXXXXXXXXXXXXXXXXXXXXXX" })),
   },
   Address: jest.fn(),
-  xdr: {},
+  xdr: {
+    HostFunction: {
+      hostFunctionTypeInvokeContract: jest.fn(() => ({ _hostFn: true })),
+    },
+    InvokeContractArgs: jest.fn(),
+  },
 }));
 
 // Stub GeneratedLinkoraClient so the super() chain works without needing the
@@ -193,14 +209,15 @@ describe("LinkoraClient simulation and fee injection", () => {
   });
 
   describe("prepareTransaction()", () => {
-    it("should return a prepared transaction with resource fee injected", async () => {
+    it("should assemble the transaction with simulated auth and fees", async () => {
       const mockResult = {
         _isSuccess: true,
         minResourceFee: "5000",
         transactionData: null,
-        result: { retval: null },
+        result: { retval: null, auth: [] },
       };
       mockSimulateTransaction.mockResolvedValue(mockResult);
+      mockAssembleBuild.mockReturnValue({ _assembled: true });
 
       const sourceAccount = new Account("GSOURCE", "0");
       const result = await client.prepareTransaction("set_profile", sourceAccount, {
@@ -208,8 +225,12 @@ describe("LinkoraClient simulation and fee injection", () => {
         _val: "GUSER",
       } as any);
 
-      expect(result).toBeDefined();
-      expect(mockSetTimeout).toHaveBeenCalled();
+      expect(result).toEqual({ _assembled: true });
+      const { assembleTransaction } = jest.requireMock("@stellar/stellar-sdk/rpc");
+      expect(assembleTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ toEnvelope: expect.any(Function) }),
+        mockResult
+      );
     });
 
     it("should throw SimulationError on simulation failure during preparation", async () => {
@@ -267,6 +288,26 @@ describe("LinkoraClient simulation and fee injection", () => {
       ];
 
       await expect(client.buildMultiOpTx(sourceAccount, ops)).rejects.toThrow(SimulationError);
+    });
+
+    it("should throw SimulationError when simulated auth entries do not match op count", async () => {
+      const mockResult = {
+        _isSuccess: true,
+        minResourceFee: "10000",
+        transactionData: null,
+        result: [{ auth: [] }],
+      };
+      mockSimulateTransaction.mockResolvedValue(mockResult);
+
+      const sourceAccount = new Account("GSOURCE", "0");
+      const ops = [
+        { method: "approve", args: [{ _type: "scval", _val: "TOKEN" }] as any[] },
+        { method: "pool_deposit", args: [{ _type: "scval", _val: "POOL" }] as any[] },
+      ];
+
+      await expect(client.buildMultiOpTx(sourceAccount, ops)).rejects.toThrow(
+        "expected 2 auth entries for 2 operations"
+      );
     });
   });
 });

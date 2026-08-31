@@ -1,8 +1,42 @@
 declare const process: undefined | { cwd?: () => string };
 
 export interface CursorStore {
+  /**
+   * Get the current cursor.
+   *
+   * @returns A promise that resolves to the cursor string, or undefined if none exists.
+   *
+   * @example
+   * ```ts
+   * const cursor = await store.get();
+   * console.log("Current cursor:", cursor);
+   * ```
+   */
   get(): Promise<string | undefined>;
+  /**
+   * Set a new cursor.
+   *
+   * @param cursor The new cursor string (e.g., pagingToken).
+   * @returns A promise that resolves when the cursor is saved.
+   *
+   * @example
+   * ```ts
+   * await store.set("123456789-1");
+   * console.log("Cursor updated");
+   * ```
+   */
   set(cursor: string): Promise<void>;
+  /**
+   * Clear the stored cursor.
+   *
+   * @returns A promise that resolves when the cursor is cleared.
+   *
+   * @example
+   * ```ts
+   * await store.clear();
+   * console.log("Cursor cleared");
+   * ```
+   */
   clear(): Promise<void>;
 }
 
@@ -109,6 +143,20 @@ export class FileCursorStore implements CursorStore {
   }
 }
 
+/**
+ * Create an appropriate default CursorStore based on the environment.
+ * Uses LocalStorage in browsers, SecureStore in React Native/Expo,
+ * File-based storage in Node.js, and falls back to Memory storage.
+ *
+ * @param keyOrPath Optional key or file path for the storage.
+ * @returns A platform-appropriate CursorStore implementation.
+ *
+ * @example
+ * ```ts
+ * const store = createDefaultCursorStore();
+ * await store.set("12345-1");
+ * ```
+ */
 export function createDefaultCursorStore(keyOrPath?: string): CursorStore {
   if (getLocalStorage()) return new LocalStorageCursorStore(keyOrPath);
   const secureStore = getSecureStore();

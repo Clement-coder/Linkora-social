@@ -1,9 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { LinkoraClient } from "linkora-sdk";
+import { useState, useEffect, useCallback } from "react";
 
 import { useToast } from "../context/ToastContext";
 import { useWallet } from "./useWallet";
-import { useNetwork } from "./useNetwork";
 import { useSubmitTx } from "./useSubmitTx";
 
 export interface BlockedUser {
@@ -26,10 +24,7 @@ export interface UseBlockReturn {
 export function useBlock(): UseBlockReturn {
   const { address: currentUserAddress, connected } = useWallet();
   const { showError } = useToast();
-  const { contractId, rpcUrl } = useNetwork();
   const submitTx = useSubmitTx();
-
-  const client = useMemo(() => new LinkoraClient({ contractId, rpcUrl }), [contractId, rpcUrl]);
 
   const [blocked, setBlocked] = useState<BlockedUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -79,16 +74,18 @@ export function useBlock(): UseBlockReturn {
       setError(null);
 
       try {
-        const txXdr = client.blockUser(currentUserAddress, address);
-        await submitTx(txXdr);
+        await submitTx(`block_user:${currentUserAddress}:${address}`);
         setBlocked((prev) => [...prev, { address, reason: "Blocked" }]);
+        // Re-fetch from the indexer so the list reflects the latest server
+        // state instead of trusting our local snapshot.
+        await loadBlocked();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to block user. Please try again.");
       } finally {
         setBlocking(null);
       }
     },
-    [currentUserAddress, connected, client, submitTx, showError]
+    [currentUserAddress, connected, submitTx, showError, loadBlocked]
   );
 
   const unblockUser = useCallback(
@@ -102,16 +99,18 @@ export function useBlock(): UseBlockReturn {
       setError(null);
 
       try {
-        const txXdr = client.unblockUser(currentUserAddress, address);
-        await submitTx(txXdr);
+        await submitTx(`unblock_user:${currentUserAddress}:${address}`);
         setBlocked((prev) => prev.filter((item) => item.address !== address));
+        // Re-fetch from the indexer so the list reflects the latest server
+        // state instead of trusting our local snapshot.
+        await loadBlocked();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to unblock user. Please try again.");
       } finally {
         setBlocking(null);
       }
     },
-    [currentUserAddress, connected, client, submitTx, showError]
+    [currentUserAddress, connected, submitTx, showError, loadBlocked]
   );
 
   const refresh = useCallback(() => {

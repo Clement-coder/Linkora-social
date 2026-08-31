@@ -11,7 +11,14 @@ import {
   DecryptionError,
 } from "@/lib/dm/crypto";
 import { hasDmKeypair, storeDmKeypair, loadDmKeypair } from "@/lib/dm/storage";
-import { sendRelayMessage, fetchRelayMessages, type RelayMessage } from "@/lib/dm/relay";
+import {
+  sendRelayMessage,
+  fetchRelayMessages,
+  connectRelayWs,
+  onRelayMessage,
+  sendTypingStatus,
+  type RelayMessage,
+} from "@/lib/dm/relay";
 import { getDmKey, publishDmKey } from "@/lib/dm/contract";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -39,6 +46,10 @@ export default function DirectMessagePage() {
   const [error, setError] = useState<string | null>(null);
   const [recipientHasKeys, setRecipientHasKeys] = useState<boolean | null>(null);
 
+  const [isTyping, setIsTyping] = useState(false);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastTypingSentRef = useRef<number>(0);
+
   // ── Key initialisation ────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -46,6 +57,15 @@ export default function DirectMessagePage() {
     setKeysReady(hasDmKeypair(myAddress));
     setLoading(false);
   }, [myAddress]);
+
+  // Clean up typing timeout
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // ── Message decryption helper ─────────────────────────────────────────────
 
@@ -100,9 +120,25 @@ export default function DirectMessagePage() {
 
   useEffect(() => {
     if (keysReady && myAddress) {
+      connectRelayWs(myAddress);
+      
+      const unsubscribe = onRelayMessage((payload: any) => {
+        if (payload.type === 'new_message' && payload.sender === recipientAddress) {
+          loadMessages();
+        } else if (payload.type === 'typing_status' && payload.sender === recipientAddress) {
+          setIsTyping(true);
+          if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+          typingTimeoutRef.current = setTimeout(() => {
+            setIsTyping(false);
+          }, 5000);
+        }
+      });
+
       loadMessages();
+
+      return () => unsubscribe();
     }
-  }, [keysReady, myAddress, loadMessages]);
+  }, [keysReady, myAddress, loadMessages, recipientAddress]);
 
   // Auto-scroll when messages change
   useEffect(() => {
@@ -183,6 +219,17 @@ export default function DirectMessagePage() {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend(e as unknown as React.FormEvent);
+    }
+  };
+
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setNewMessage(e.target.value);
+    if (!myAddress || !recipientAddress) return;
+
+    const now = Date.now();
+    if (now - lastTypingSentRef.current > 3000) {
+      sendTypingStatus(recipientAddress);
+      lastTypingSentRef.current = now;
     }
   };
 
@@ -275,6 +322,13 @@ export default function DirectMessagePage() {
         </div>
       </header>
 
+      {/* ── Typing Indicator ──────────────────────────────────────────────── */}
+      {isTyping && (
+        <div className="shrink-0 bg-violet-500/10 px-4 py-1.5 text-xs font-medium italic text-violet-600 dark:text-violet-400">
+          {recipientAddress.slice(0, 8)}… is typing…
+        </div>
+      )}
+
       {/* ── Error banner ────────────────────────────────────────────────── */}
       {error && (
         <div className="flex shrink-0 items-center justify-between border-b border-red-700/50 bg-red-900/20 px-4 py-2 text-sm text-red-400" role="alert">
@@ -353,7 +407,7 @@ export default function DirectMessagePage() {
         <form onSubmit={handleSend} className="flex gap-2">
           <textarea
             value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
+            onChange={handleTextChange}
             onKeyDown={handleKeyDown}
             placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
             disabled={sending || !keysReady || recipientHasKeys === false}
@@ -379,3 +433,4 @@ export default function DirectMessagePage() {
     </div>
   );
 }
+

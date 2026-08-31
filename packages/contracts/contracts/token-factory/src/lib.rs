@@ -6,11 +6,27 @@ use soroban_sdk::{
     contract, contractevent, contractimpl, symbol_short, Address, BytesN, Env, String, Symbol,
 };
 
+#[macro_export]
+macro_rules! require_with_error {
+    ($env:expr, $cond:expr, $msg:expr) => {{
+        if !($cond) {
+            let _ = &$env;
+            panic!("{}", $msg);
+        }
+    }};
+}
+
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const TOKEN_WASM: Symbol = symbol_short!("TOKN_WSM");
 const INIT: Symbol = symbol_short!("INIT");
+
+// ── Validation Constants ────────────────────────────────────────────────────────
+
+const MAX_DECIMALS: u32 = 38;
+const MAX_NAME_LEN: u32 = 64;
+const MAX_SYMBOL_LEN: u32 = 16;
 
 // ── TTL ───────────────────────────────────────────────────────────────────────
 
@@ -25,11 +41,16 @@ const LEDGER_THRESHOLD: u32 = 535_000 - 100;
 #[contractevent]
 #[derive(Clone)]
 pub struct CreatorTokenDeployedEvent {
+    /// The account that requested the deployment and now administers the
+    /// new token (SEP-41 admin, mint authority).
     #[topic]
     pub deployer: Address,
+    /// Deterministic address of the newly deployed SEP-41 token contract.
     #[topic]
     pub token_address: Address,
+    /// Human-readable token name, as passed to `deploy_creator_token`.
     pub name: String,
+    /// Token symbol/ticker, as passed to `deploy_creator_token`.
     pub symbol: String,
 }
 
@@ -42,7 +63,15 @@ pub struct TokenFactoryContract;
 impl TokenFactoryContract {
     // ── Admin ─────────────────────────────────────────────────────────────────
 
-    /// Initialise the factory. Must be called exactly once after deployment.
+    /// Initialise the factory. Must be called exactly once after deployment;
+    /// panics with `"already initialized"` on any subsequent call.
+    ///
+    /// @param admin Address stored as the factory administrator; required to
+    ///   authorize `update_token_wasm`.
+    /// @param token_wasm_hash WASM hash of the SEP-41 token contract that
+    ///   `deploy_creator_token` will instantiate for new creator tokens.
+    /// Side effects: sets instance storage (`ADMIN`, `TOKEN_WASM`, `INIT`)
+    /// and extends the instance TTL.
     pub fn initialize(env: Env, admin: Address, token_wasm_hash: BytesN<32>) {
         if env
             .storage()
@@ -52,6 +81,17 @@ impl TokenFactoryContract {
         {
             panic!("already initialized");
         }
+
+        let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+        require_with_error!(
+            &env,
+            token_wasm_hash != zero_hash,
+            "token_wasm_hash must not be zero"
+        );
+        // Validate admin is not the zero address by requiring auth.
+        // A zero address cannot satisfy require_auth, so this implicitly rejects it.
+        admin.require_auth();
+
         env.storage().instance().set(&ADMIN, &admin);
         env.storage().instance().set(&TOKEN_WASM, &token_wasm_hash);
         env.storage().instance().set(&INIT, &true);
@@ -62,9 +102,20 @@ impl TokenFactoryContract {
 
     /// Replace the token WASM hash used for new deployments.
     /// Does NOT retroactively affect already-deployed child tokens.
+    ///
+    /// Precondition: admin-only — requires auth from the address stored by
+    /// `initialize`.
+    /// @param new_wasm_hash WASM hash used by subsequent `deploy_creator_token` calls.
+    /// Side effects: overwrites instance storage (`TOKEN_WASM`) and extends the instance TTL.
     pub fn update_token_wasm(env: Env, new_wasm_hash: BytesN<32>) {
         let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
         admin.require_auth();
+        let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+        require_with_error!(
+            &env,
+            new_wasm_hash != zero_hash,
+            "token_wasm_hash must not be zero"
+        );
         env.storage().instance().set(&TOKEN_WASM, &new_wasm_hash);
         env.storage()
             .instance()
@@ -72,6 +123,9 @@ impl TokenFactoryContract {
     }
 
     /// Read the currently stored token WASM hash.
+    ///
+    /// @return The WASM hash that `deploy_creator_token` currently deploys.
+    /// Side effect: extends the instance TTL on every read.
     pub fn get_token_wasm_hash(env: Env) -> BytesN<32> {
         env.storage()
             .instance()
@@ -88,7 +142,13 @@ impl TokenFactoryContract {
     /// - Mints `initial_supply` to `deployer`.
     /// - Emits `CreatorTokenDeployedEvent`.
     ///
-    /// Returns the new token contract address.
+    /// Precondition: `deployer` must authorize the call (`require_auth`).
+    /// @param deployer Account that will own/administer the new token and receive `initial_supply`.
+    /// @param name Human-readable token name.
+    /// @param symbol Token symbol/ticker; combined with `deployer` to derive the deployment salt.
+    /// @param decimals Decimal places for the new SEP-41 token.
+    /// @param initial_supply Amount minted to `deployer` on deployment; skipped if `<= 0`.
+    /// @return Address of the newly deployed token contract.
     pub fn deploy_creator_token(
         env: Env,
         deployer: Address,
@@ -98,6 +158,22 @@ impl TokenFactoryContract {
         initial_supply: i128,
     ) -> Address {
         deployer.require_auth();
+
+        require_with_error!(
+            &env,
+            decimals <= MAX_DECIMALS,
+            "decimals must be at most 38"
+        );
+        require_with_error!(
+            &env,
+            name.len() > 0 && name.len() <= MAX_NAME_LEN,
+            "name must be 1-64 characters"
+        );
+        require_with_error!(
+            &env,
+            symbol.len() > 0 && symbol.len() <= MAX_SYMBOL_LEN,
+            "symbol must be 1-16 characters"
+        );
 
         env.storage()
             .instance()
@@ -160,6 +236,13 @@ impl TokenFactoryContract {
 
     // ── Internal ──────────────────────────────────────────────────────────────
 
+    /// Derive a deterministic CREATE2-style salt for a (deployer, symbol) pair,
+    /// so a given deployer can deploy at most one token per symbol at a
+    /// predictable address.
+    ///
+    /// @param deployer Account requesting the deployment.
+    /// @param symbol Token symbol being deployed.
+    /// @return sha256 of `deployer`'s XDR bytes concatenated with `symbol`'s bytes.
     pub fn derive_salt(env: &Env, deployer: &Address, symbol: &String) -> BytesN<32> {
         // Build a bytes buffer: deployer XDR bytes followed by symbol bytes.
         // sha256 over the concatenation gives a 32-byte deterministic salt.
