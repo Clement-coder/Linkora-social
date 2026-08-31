@@ -8,6 +8,7 @@ import { AnalyticsReport } from "./types.js";
 // C1: U+0080–U+009F) that must never appear in signed attestation fields.
 // Keeping this regex in codec.ts (co-located with encoding logic) ensures
 // every code path that serialises report fields shares the same definition.
+// eslint-disable-next-line no-control-regex
 export const CONTROL_CHAR_REGEX = /[\x00-\x1F\x7F\x80-\x9F]/;
 
 /**
