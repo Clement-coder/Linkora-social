@@ -33,6 +33,11 @@ pub struct CreatorTokenDeployedEvent {
     pub symbol: String,
 }
 
+// ── Limits ───────────────────────────────────────────────────────────────────
+
+pub const MAX_DECIMALS: u32 = 18;
+pub const MAX_INITIAL_SUPPLY: i128 = 100_000_000_000_000_000_000_000_000_000_000_i128;
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -98,6 +103,19 @@ impl TokenFactoryContract {
         initial_supply: i128,
     ) -> Address {
         deployer.require_auth();
+
+        if initial_supply < 0 {
+            panic!("invalid initial_supply: must be non-negative");
+        }
+        if decimals > MAX_DECIMALS {
+            panic!("invalid decimals: must be <= 18");
+        }
+        if initial_supply > MAX_INITIAL_SUPPLY {
+            panic!("invalid initial_supply: exceeds maximum allowed supply");
+        }
+        if 10_i128.checked_pow(decimals).is_none() {
+            panic!("invalid decimals: overflow on scaling factor");
+        }
 
         env.storage()
             .instance()
