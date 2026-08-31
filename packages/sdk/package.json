@@ -11,7 +11,7 @@
   "bugs": {
     "url": "https://github.com/Epta-Node/Linkora-social/issues"
   },
-  "license": "Apache-2.0",
+  "license": "MIT",
   "author": "Linkora Contributors",
   "keywords": [
     "stellar",
@@ -21,12 +21,19 @@
     "typescript",
     "client"
   ],
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/cjs/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
     }
   },
   "files": [
@@ -36,7 +43,8 @@
   "scripts": {
     "lint": "eslint . --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
-    "build": "tsc --outDir dist --declaration --declarationMap --sourceMap --module commonjs --target ES2020 --moduleResolution node --esModuleInterop --skipLibCheck",
+    "build": "tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json",
+    "typecheck": "tsc --noEmit",
     "docs": "typedoc --out docs src/index.ts --tsconfig tsconfig.json",
     "test": "jest",
     "test:e2e": "jest --config jest.e2e.config.js"
@@ -45,7 +53,8 @@
     "@noble/ciphers": "^0.5.3",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
-    "@stellar/stellar-sdk": "^12.3.0",
+    "@stellar/stellar-base": "^15.0.0",
+    "@stellar/stellar-sdk": "^15.1.0",
     "ajv": "^8.17.1"
   },
   "devDependencies": {
@@ -72,6 +81,6 @@
     }
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   }
 }

@@ -1,5 +1,8 @@
 import Ajv from "ajv";
-import { InvalidManifestError } from "../errors";
+import { InvalidManifestError } from "../errors.js";
+
+const MAX_ENTRY_POINT_LENGTH = 2048;
+const MAX_ICON_DATA_URL_LENGTH = 100000;
 
 const manifestSchema = {
   type: "object",
@@ -19,9 +22,11 @@ const manifestSchema = {
     },
     entryPoint: {
       type: "string",
+      maxLength: MAX_ENTRY_POINT_LENGTH,
     },
     icon: {
       type: "string",
+      maxLength: MAX_ICON_DATA_URL_LENGTH,
     },
     permissions: {
       type: "array",

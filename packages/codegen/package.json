@@ -2,8 +2,10 @@
   "name": "@linkora/codegen",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "generate": "tsx generate.ts && prettier --write \"$(cd ../../ && pwd)/packages/sdk/src/generated/*.ts\""
   },
   "dependencies": {

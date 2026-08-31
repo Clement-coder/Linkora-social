@@ -18,9 +18,15 @@ test.describe("Feed Flow", () => {
     await page.goto("/feed");
     await page.waitForLoadState("networkidle");
     const connectBtn = page.locator('[data-testid="connect-wallet"]').first();
-    if (await connectBtn.isVisible().catch(() => false)) {
-      await connectBtn.click();
-      await page.locator('[data-testid="disconnect-wallet"]').first().waitFor({ timeout: 10000 });
+    const addressChip = page.locator('[data-testid="wallet-address"]').first();
+    // The injected wallet mock auto-connects on page load, so the wallet may
+    // already be connected. Only click Connect if it is not, then assert the
+    // connected state either way.
+    if (!(await addressChip.isVisible().catch(() => false))) {
+      if (await connectBtn.isVisible().catch(() => false)) {
+        await connectBtn.click();
+      }
     }
+    await expect(addressChip).toBeVisible({ timeout: 10000 });
   });
 });

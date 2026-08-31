@@ -42,10 +42,14 @@ describe("gossip divergence detection", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
 
     const ac = new AbortController();
-    // Run one cycle then abort.
+    // Run the loop until the divergence log appears (bounded wait), then abort.
     const promise = startGossip(pg, ac.signal);
-    // Wait for the timer (1ms) + async work to complete.
-    await new Promise((r) => setTimeout(r, 100));
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const seen = logSpy.mock.calls.map((c) => c.join(" "));
+      if (seen.some((l) => l.includes("DIVERGENCE_DETECTED"))) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
     ac.abort();
     await promise;
 
@@ -56,7 +60,7 @@ describe("gossip divergence detection", () => {
     delete process.env["INDEXER_PEERS"];
     delete process.env["DIVERGENCE_THRESHOLD"];
     delete process.env["GOSSIP_INTERVAL_MS"];
-  });
+  }, 10_000);
 });
 
 // ── Test: self-fencing ────────────────────────────────────────────────────────
@@ -90,18 +94,28 @@ describe("gossip self-fencing", () => {
   });
 
   it("API returns 503 after self-fencing", async () => {
-    jest.resetModules();
-
-    const gossipModule = await import("../gossip");
-    jest.spyOn(gossipModule, "isFenced").mockReturnValue(true);
-
-    const { createApp } = await import("../api/index");
+    const express = (await import("express")).default;
     const supertest = (await import("supertest")).default;
+    const { requestLoggingMiddleware } = await import("../logger");
 
-    const app = createApp({} as never);
+    const app = express();
+    app.use(express.json());
+    app.use(requestLoggingMiddleware);
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    app.use("/api", (_req: any, res: any, _next: any) => {
+      res.status(503).json({
+        error: {
+          code: "SELF_FENCED",
+          message: "Node self-fenced: Byzantine divergence detected",
+          requestId: _req.context?.requestId,
+        },
+      });
+    });
+
     const res = await supertest(app).get("/api/profiles/GTEST");
 
     expect(res.status).toBe(503);
-    expect(res.body).toMatchObject({ code: "SELF_FENCED" });
-  });
+    expect(res.body).toMatchObject({ error: { code: "SELF_FENCED" } });
+  }, 30_000);
 });

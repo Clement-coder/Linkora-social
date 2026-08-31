@@ -8,6 +8,7 @@ import { createDomainProcessor } from "../domain-processor";
 import { Database, Post, Profile } from "../db";
 import { PgClientLike } from "../pipeline";
 import { NotificationService } from "../notifications/service";
+import { logger } from "../logger";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -249,6 +250,47 @@ describe("domain-processor: pool_withdraw", () => {
     );
 
     expect(db.adjustPoolBalance).toHaveBeenCalledWith("P123", -200n, 100);
+  });
+});
+
+// ── malformed numeric fields ────────────────────────────────────────────────
+
+describe("domain-processor: malformed numeric fields", () => {
+  it("skips the event and logs a warning instead of writing a phantom id=0 record", async () => {
+    const db = makeDb();
+    const pool = makePool();
+    const ns = makeNotificationService();
+    const processor = createDomainProcessor(pool, ns, db);
+    const client = makePgClient();
+    const warnSpy = jest.spyOn(logger, "warn").mockImplementation(() => logger as never);
+
+    await expect(
+      processor(
+        client,
+        makeIngestEvent("post_created", { id: "not-a-number", author: "GABC" })
+      )
+    ).resolves.toBeUndefined();
+
+    expect(db.insertPost).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ rawValue: "not-a-number" }),
+      expect.stringContaining("malformed")
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it("still propagates errors unrelated to malformed values", async () => {
+    const db = makeDb();
+    (db.markPostDeleted as jest.Mock).mockRejectedValue(new Error("db exploded"));
+    const pool = makePool();
+    const ns = makeNotificationService();
+    const processor = createDomainProcessor(pool, ns, db);
+    const client = makePgClient();
+
+    await expect(
+      processor(client, makeIngestEvent("post_deleted", { post_id: 1n }))
+    ).rejects.toThrow("db exploded");
   });
 });
 

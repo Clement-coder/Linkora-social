@@ -57,7 +57,7 @@ jest.mock("@/hooks/useWallet", () => ({
   }),
 }));
 
-jest.mock("@/lib/OptimisticStore", () => ({
+jest.mock("@/lib/optimisticStore", () => ({
   useOptimisticFollow: () => ({
     isFollowing: false,
     followersCount: 10,
@@ -83,10 +83,23 @@ jest.mock("@/lib/LinkoraEventSubscriber", () => ({
 }));
 
 // Mock the SDK import used inside the page for follow actions
+jest.mock("linkora-sdk", () => ({
+  LinkoraClient: jest.fn().mockImplementation(() => ({
+    follow: jest.fn(() => "mock-xdr"),
+    unfollow: jest.fn(() => "mock-xdr"),
+    isBlocked: jest.fn().mockResolvedValue(false),
+    blockUser: jest.fn().mockResolvedValue("mock-xdr"),
+    unblockUser: jest.fn().mockResolvedValue("mock-xdr"),
+  })),
+}));
+
 jest.mock("../../../packages/sdk/src/client", () => ({
   LinkoraClient: jest.fn().mockImplementation(() => ({
     follow: jest.fn(() => "mock-xdr"),
     unfollow: jest.fn(() => "mock-xdr"),
+    isBlocked: jest.fn().mockResolvedValue(false),
+    blockUser: jest.fn().mockResolvedValue("mock-xdr"),
+    unblockUser: jest.fn().mockResolvedValue("mock-xdr"),
   })),
 }));
 

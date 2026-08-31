@@ -190,8 +190,12 @@ async function getPostAuthor(pool: Pool, postId: bigint): Promise<string | null>
   return result.rows[0]?.author ?? null;
 }
 
-function makeDispatchKey(eventId: number, eventType: string, recipient: string): string {
-  return `${eventId}|${eventType}|${recipient}`;
+// Uses a "ledgerSequence-eventIndex" separator instead of the arithmetic
+// `ledgerSequence * 1000 + eventIndex` composite: eventIndex can exceed 999
+// within a single ledger, which would overflow into the next ledger's key
+// range and collide, silently dropping notifications for the colliding event.
+function makeDispatchKey(eventKey: string, eventType: string, recipient: string): string {
+  return `${eventKey}|${eventType}|${recipient}`;
 }
 
 async function isAlreadyDispatched(
@@ -201,7 +205,7 @@ async function isAlreadyDispatched(
   recipient: string
 ): Promise<boolean> {
   const dispatchKey = makeDispatchKey(
-    event.ledgerSequence * 1000 + event.eventIndex,
+    `${event.ledgerSequence}-${event.eventIndex}`,
     eventType,
     recipient
   );
@@ -219,8 +223,15 @@ async function markDispatched(
   eventType: string,
   recipient: string
 ): Promise<void> {
+  // event_id remains a numeric BIGINT column for informational/debugging
+  // purposes only — dispatch_key (built above with a separator) is the sole
+  // uniqueness key enforced by the DB constraint.
   const eventId = event.ledgerSequence * 1000 + event.eventIndex;
-  const dispatchKey = makeDispatchKey(eventId, eventType, recipient);
+  const dispatchKey = makeDispatchKey(
+    `${event.ledgerSequence}-${event.eventIndex}`,
+    eventType,
+    recipient
+  );
 
   await pool.query(
     `INSERT INTO sent_notifications (event_id, event_type, recipient, dispatch_key)

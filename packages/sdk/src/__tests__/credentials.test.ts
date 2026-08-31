@@ -27,6 +27,8 @@ function hashPair(left: Uint8Array, right: Uint8Array): Uint8Array {
 }
 
 describe('generateCredentialMerkleProof', () => {
+  // NOTE: This function is @deprecated (see credentials.ts).
+  // Tests are retained to ensure the implementation remains correct until removal.
   it('generates a proof that recomputes to the root', () => {
     const leaves = [leaf(1), leaf(2), leaf(3), leaf(4)];
     const { root, proof } = generateCredentialMerkleProof(leaves, 2);

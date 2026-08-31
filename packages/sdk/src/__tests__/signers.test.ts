@@ -2,6 +2,10 @@
 const mockFreighterSign = jest.fn();
 const mockFreighterGetPublicKey = jest.fn();
 
+// Known Stellar network passphrases (kept in sync with freighter.ts constants)
+const MAINNET_PASSPHRASE = "Public Global Stellar Network ; September 2015";
+const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
+
 // ── LedgerSigner transport / app mocks ───────────────────────────────────────
 
 const mockClose = jest.fn();
@@ -34,7 +38,7 @@ jest.mock("@ledgerhq/hw-app-str", () => ({
   default: mockStrAppConstructor,
 }));
 
-const { FreighterSigner } =
+const { FreighterSigner, NETWORK_PASSPHRASES } =
   require("../signers/freighter") as typeof import("../signers/freighter");
 const { LedgerSigner } = require("../signers/ledger") as typeof import("../signers/ledger");
 
@@ -55,10 +59,14 @@ describe("FreighterSigner", () => {
     delete (global as any).window;
   });
 
+  // ── Availability ────────────────────────────────────────────────────────────
+
   it("should throw error if Freighter is not available", () => {
     delete (global as any).window;
     expect(() => new FreighterSigner()).toThrow("Freighter extension not found");
   });
+
+  // ── Public key ──────────────────────────────────────────────────────────────
 
   it("should get public key from Freighter", async () => {
     mockFreighterGetPublicKey.mockResolvedValue("GPUBLICKEY123");
@@ -80,25 +88,150 @@ describe("FreighterSigner", () => {
     expect(mockFreighterGetPublicKey).toHaveBeenCalledTimes(1);
   });
 
-  it("should sign transaction with Freighter", async () => {
-    mockFreighterGetPublicKey.mockResolvedValue("GPUBLICKEY123");
+  // ── signTransaction return value ────────────────────────────────────────────
+
+  it("returns the signed XDR string from Freighter (not void)", async () => {
+    mockFreighterSign.mockResolvedValue("SIGNED_XDR_BASE64");
+
+    const signer = new FreighterSigner();
+    const result = await signer.signTransaction("raw_xdr_string");
+
+    expect(typeof result).toBe("string");
+    expect(result).toBe("SIGNED_XDR_BASE64");
+  });
+
+  it("passes the XDR string directly to Freighter", async () => {
     mockFreighterSign.mockResolvedValue("SIGNEDURLSTRING");
 
     const signer = new FreighterSigner();
-    const result = await signer.signTransaction("fakexdrstring");
+    await signer.signTransaction("fakexdrstring");
 
-    expect(result).toBe("SIGNEDURLSTRING");
-    expect(mockFreighterSign).toHaveBeenCalledWith("fakexdrstring");
+    expect(mockFreighterSign).toHaveBeenCalledWith("fakexdrstring", expect.any(Object));
+  });
+
+  it("converts a TransactionLike object to XDR before signing", async () => {
+    mockFreighterSign.mockResolvedValue("SIGNED_FROM_OBJ");
+
+    const mockTx = {
+      toEnvelope: jest.fn(() => ({ toXDR: jest.fn(() => "OBJ_XDR_STRING") })),
+      networkPassphrase: MAINNET_PASSPHRASE,
+    };
+
+    const signer = new FreighterSigner({ network: "mainnet" });
+    const result = await signer.signTransaction(mockTx);
+
+    expect(mockTx.toEnvelope).toHaveBeenCalled();
+    expect(mockFreighterSign).toHaveBeenCalledWith("OBJ_XDR_STRING", expect.any(Object));
+    expect(result).toBe("SIGNED_FROM_OBJ");
   });
 
   it("should throw error if Freighter sign fails", async () => {
-    mockFreighterSign.mockRejectedValue(new Error("User rejected"));
+    mockFreighterSign.mockRejectedValue(new Error("Some random error"));
 
     const signer = new FreighterSigner();
 
     await expect(signer.signTransaction("fakexdrstring")).rejects.toThrow(
       "Failed to sign transaction with Freighter"
     );
+  });
+
+  it("should throw a user_rejected SigningError if Freighter sign fails with user decline", async () => {
+    mockFreighterSign.mockRejectedValue(new Error("User declined access"));
+
+    const signer = new FreighterSigner();
+
+    await expect(signer.signTransaction("fakexdrstring")).rejects.toMatchObject({
+      name: "SigningError",
+      details: { reason: "user_rejected" }
+    });
+  });
+
+  // ── Network passphrase forwarding ───────────────────────────────────────────
+
+  it("forwards networkPassphrase to Freighter on every sign call", async () => {
+    mockFreighterSign.mockResolvedValue("SIGNED");
+
+    const signer = new FreighterSigner({ network: "testnet" });
+    await signer.signTransaction("some_xdr");
+
+    expect(mockFreighterSign).toHaveBeenCalledWith("some_xdr", {
+      networkPassphrase: TESTNET_PASSPHRASE,
+    });
+  });
+
+  it("forwards mainnet passphrase by default when no network is configured", async () => {
+    mockFreighterSign.mockResolvedValue("SIGNED");
+
+    const signer = new FreighterSigner();
+    await signer.signTransaction("some_xdr");
+
+    expect(mockFreighterSign).toHaveBeenCalledWith("some_xdr", {
+      networkPassphrase: MAINNET_PASSPHRASE,
+    });
+  });
+
+  it("accepts a raw passphrase string via allowCustomNetwork", async () => {
+    mockFreighterSign.mockResolvedValue("SIGNED_CUSTOM");
+
+    const customPassphrase = "My Private Network ; 2024";
+    const signer = new FreighterSigner({
+      network: customPassphrase,
+      allowCustomNetwork: true,
+    });
+    const result = await signer.signTransaction("custom_xdr");
+
+    expect(result).toBe("SIGNED_CUSTOM");
+    expect(mockFreighterSign).toHaveBeenCalledWith("custom_xdr", {
+      networkPassphrase: customPassphrase,
+    });
+  });
+
+  // ── Network passphrase validation ───────────────────────────────────────────
+
+  it("throws SigningError when an unknown raw passphrase is used without allowCustomNetwork", () => {
+    expect(() => new FreighterSigner({ network: "Unknown Network ; 9999" })).toThrow(
+      /Unknown network passphrase/
+    );
+  });
+
+  it("does NOT throw when allowCustomNetwork:true is set with an unknown passphrase", () => {
+    expect(
+      () => new FreighterSigner({ network: "Unknown Network ; 9999", allowCustomNetwork: true })
+    ).not.toThrow();
+  });
+
+  it("exposes NETWORK_PASSPHRASES constants for all three known networks", () => {
+    expect(NETWORK_PASSPHRASES.mainnet).toBe(MAINNET_PASSPHRASE);
+    expect(NETWORK_PASSPHRASES.testnet).toBe(TESTNET_PASSPHRASE);
+    expect(NETWORK_PASSPHRASES.futurenet).toMatch(/Future/i);
+  });
+
+  it("throws SigningError when TransactionLike passphrase mismatches signer passphrase", async () => {
+    const mockTx = {
+      toEnvelope: jest.fn(() => ({ toXDR: jest.fn(() => "XDR") })),
+      networkPassphrase: TESTNET_PASSPHRASE, // tx is testnet
+    };
+
+    // Signer is configured for mainnet
+    const signer = new FreighterSigner({ network: "mainnet" });
+
+    await expect(signer.signTransaction(mockTx)).rejects.toThrow(/passphrase mismatch/i);
+    // Freighter must NOT be called when the passphrase check fails
+    expect(mockFreighterSign).not.toHaveBeenCalled();
+  });
+
+  it("does not throw passphrase mismatch when TransactionLike has no networkPassphrase", async () => {
+    mockFreighterSign.mockResolvedValue("SIGNED_NO_PASSPHRASE");
+
+    const mockTx = {
+      toEnvelope: jest.fn(() => ({ toXDR: jest.fn(() => "XDR_NO_PASSPHRASE") })),
+      // networkPassphrase intentionally absent
+    };
+
+    const signer = new FreighterSigner({ network: "mainnet" });
+    const result = await signer.signTransaction(mockTx);
+
+    expect(result).toBe("SIGNED_NO_PASSPHRASE");
   });
 });
 
@@ -205,6 +338,17 @@ describe("LedgerSigner", () => {
 
     expect(typeof result).toBe("string");
     expect(result).toBe(mockSigBuffer.toString("base64"));
+  });
+
+  it("should throw a user_rejected SigningError if Ledger sign fails with user rejected", async () => {
+    mockLedgerSignTransaction.mockRejectedValue(new Error("user rejected by user"));
+
+    const signer = new LedgerSigner();
+
+    await expect(signer.signTransaction("fakexdrstring")).rejects.toMatchObject({
+      name: "SigningError",
+      details: { reason: "user_rejected" }
+    });
   });
 
   it("should invalidate public key cache on close()", async () => {

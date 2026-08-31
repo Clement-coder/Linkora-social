@@ -1,6 +1,7 @@
 name: Deploy Testnet
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -60,7 +61,9 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node version is pinned in .node-version (single source of truth
+          # across CI, setup.sh, and package.json engines fields).
+          node-version-file: ".node-version"
           cache: pnpm
           registry-url: "https://registry.npmjs.org"
 

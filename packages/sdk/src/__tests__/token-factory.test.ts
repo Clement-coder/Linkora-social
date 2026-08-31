@@ -19,14 +19,15 @@ const mockToXDR = jest.fn();
 const mockSimulate = jest.fn();
 const mockGetPublicKey = jest.fn(() => "GFAKEKEY111111111111111111111111");
 
-jest.mock("@stellar/stellar-sdk", () => ({
-  rpc: {
-    Server: jest.fn(() => ({ simulateTransaction: mockSimulate })),
-    Api: {
-      isSimulationError: jest.fn(() => false),
-      isSimulationSuccess: jest.fn(() => true),
-    },
+jest.mock("@stellar/stellar-sdk/rpc", () => ({
+  Server: jest.fn(() => ({ simulateTransaction: mockSimulate })),
+  Api: {
+    isSimulationError: jest.fn(() => false),
+    isSimulationSuccess: jest.fn(() => true),
   },
+}));
+
+jest.mock("@stellar/stellar-base", () => ({
   Contract: jest.fn(() => ({ call: mockCall })),
   nativeToScVal: jest.fn((val: unknown, opts?: unknown) => ({
     _type: "scval",
@@ -37,6 +38,7 @@ jest.mock("@stellar/stellar-sdk", () => ({
   TransactionBuilder: jest.fn(() => ({ addOperation: mockAddOperation })),
   Account: jest.fn(),
   Keypair: { random: jest.fn(() => ({ publicKey: mockGetPublicKey })) },
+  StrKey: { isValidEd25519PublicKey: jest.fn(() => true) },
   xdr: {},
 }));
 
@@ -83,7 +85,7 @@ describe("LinkoraClient — token factory methods", () => {
       expect(result).toBe(XDR);
 
       // Contract must be instantiated with the factory ID, not the main contract ID.
-      const { Contract } = jest.requireMock("@stellar/stellar-sdk");
+      const { Contract } = jest.requireMock("@stellar/stellar-base");
       expect(Contract).toHaveBeenCalledWith(FACTORY_ID);
 
       // The call must use the correct method name and args.
@@ -119,9 +121,22 @@ describe("LinkoraClient — token factory methods", () => {
   // ── setProfileWithNewToken ───────────────────────────────────────────────
 
   describe("setProfileWithNewToken", () => {
-    it("returns two XDR strings — deploy first, profile second", () => {
+    it("returns two XDR strings — deploy first, then set profile with the deployed token address", async () => {
       const client = makeClient();
-      const [deployXdr, profileXdr] = client.setProfileWithNewToken({
+      mockSimulate.mockResolvedValue({
+        result: { retval: TOKEN_ADDR },
+        error: undefined,
+      });
+      const rpc = jest.requireMock("@stellar/stellar-sdk/rpc") as {
+        Api: { isSimulationSuccess: jest.Mock; isSimulationError: jest.Mock };
+      };
+      rpc.Api.isSimulationSuccess.mockReturnValue(true);
+      rpc.Api.isSimulationError.mockReturnValue(false);
+
+      const { scValToNative } = jest.requireMock("@stellar/stellar-base");
+      scValToNative.mockReturnValue(TOKEN_ADDR);
+
+      const [deployXdr, profileXdr] = await client.setProfileWithNewToken({
         user: DEPLOYER,
         username: "alice",
         tokenParams: {
@@ -132,15 +147,9 @@ describe("LinkoraClient — token factory methods", () => {
         },
       });
 
-      // Both must be the mocked XDR (real tests would differ; here we verify
-      // sequencing by checking two distinct calls were made).
       expect(deployXdr).toBe(XDR);
       expect(profileXdr).toBe(XDR);
-
-      // Two contract calls must have been made in order.
-      expect(mockCall).toHaveBeenCalledTimes(2);
-
-      // First call: deploy_creator_token on the factory.
+      expect(mockCall).toHaveBeenCalledTimes(3);
       expect(mockCall).toHaveBeenNthCalledWith(
         1,
         "deploy_creator_token",
@@ -150,30 +159,37 @@ describe("LinkoraClient — token factory methods", () => {
         val(7),
         val(500_000n)
       );
-
-      // Second call: set_profile on the main Linkora contract.
       expect(mockCall).toHaveBeenNthCalledWith(
         2,
+        "deploy_creator_token",
+        addr(DEPLOYER),
+        val("Alice Coin"),
+        val("ALC"),
+        val(7),
+        val(500_000n)
+      );
+      expect(mockCall).toHaveBeenNthCalledWith(
+        3,
         "set_profile",
         addr(DEPLOYER),
         val("alice"),
-        expect.anything() // placeholder address
+        addr(TOKEN_ADDR)
       );
     });
 
-    it("throws if tokenFactoryId is not configured", () => {
+    it("throws if tokenFactoryId is not configured", async () => {
       const client = new LinkoraClient({
         contractId: CONTRACT_ID,
         rpcUrl: "https://dummy.example.com",
       });
 
-      expect(() =>
+      await expect(
         client.setProfileWithNewToken({
           user: DEPLOYER,
           username: "alice",
           tokenParams: { name: "T", symbol: "T", decimals: 0, initialSupply: 0n },
         })
-      ).toThrow("tokenFactoryId must be set");
+      ).rejects.toThrow("tokenFactoryId must be set");
     });
   });
 
@@ -186,11 +202,13 @@ describe("LinkoraClient — token factory methods", () => {
         error: undefined,
       });
 
-      const { rpc } = jest.requireMock("@stellar/stellar-sdk");
+      const rpc = jest.requireMock("@stellar/stellar-sdk/rpc") as {
+        Api: { isSimulationSuccess: jest.Mock; isSimulationError: jest.Mock };
+      };
       rpc.Api.isSimulationSuccess.mockReturnValue(true);
       rpc.Api.isSimulationError.mockReturnValue(false);
 
-      const { scValToNative } = jest.requireMock("@stellar/stellar-sdk");
+      const { scValToNative } = jest.requireMock("@stellar/stellar-base");
       scValToNative.mockReturnValue(TOKEN_ADDR);
 
       const client = makeClient();
@@ -205,7 +223,7 @@ describe("LinkoraClient — token factory methods", () => {
       expect(result).toBe(TOKEN_ADDR);
 
       // Must simulate against the factory contract.
-      const { Contract } = jest.requireMock("@stellar/stellar-sdk");
+      const { Contract } = jest.requireMock("@stellar/stellar-base");
       expect(Contract).toHaveBeenCalledWith(FACTORY_ID);
     });
 
@@ -215,7 +233,9 @@ describe("LinkoraClient — token factory methods", () => {
         error: undefined,
       });
 
-      const { rpc } = jest.requireMock("@stellar/stellar-sdk");
+      const rpc = jest.requireMock("@stellar/stellar-sdk/rpc") as {
+        Api: { isSimulationSuccess: jest.Mock; isSimulationError: jest.Mock };
+      };
       rpc.Api.isSimulationSuccess.mockReturnValue(true);
       rpc.Api.isSimulationError.mockReturnValue(false);
 

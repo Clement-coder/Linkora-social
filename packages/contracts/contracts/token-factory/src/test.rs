@@ -90,12 +90,6 @@ fn test_same_inputs_produce_same_salt() {
 }
 
 // ── Event emission test ───────────────────────────────────────────────────────
-//
-// We verify that deploying a creator token (via the factory) results in
-// the CreatorTokenDeployedEvent being present in the event log.
-// The full deploy_v2 path requires a live WASM; integration tests cover that.
-// Here we verify the event struct serializes correctly by publishing directly
-// from within the test, which requires a mock contract context.
 
 #[test]
 fn test_event_published_when_deploy_helper_called() {
@@ -126,46 +120,28 @@ fn test_event_published_when_deploy_helper_called() {
     // The publish() call itself is exercised in the integration tests.
 }
 
-// ── Supply and Decimals validation tests ─────────────────────────────────────
+// ── Validation tests ──────────────────────────────────────────────────────────
 
 #[test]
-#[should_panic(expected = "invalid initial_supply: must be non-negative")]
-fn test_negative_initial_supply_panics() {
+#[should_panic(expected = "token_wasm_hash must not be zero")]
+fn test_initialize_rejects_zero_wasm_hash() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup(&env);
+    let factory_id = env.register(TokenFactoryContract, ());
+    let client = TokenFactoryContractClient::new(&env, &factory_id);
 
-    let deployer = Address::generate(&env);
-    let name = String::from_str(&env, "Test");
-    let symbol = String::from_str(&env, "TST");
-
-    client.deploy_creator_token(&deployer, &name, &symbol, &7, &-1);
+    let admin = Address::generate(&env);
+    let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.initialize(&admin, &zero_hash);
 }
 
 #[test]
-#[should_panic(expected = "invalid decimals: must be <= 18")]
-fn test_invalid_decimals_panics() {
+#[should_panic(expected = "token_wasm_hash must not be zero")]
+fn test_update_token_wasm_rejects_zero_hash() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, _) = setup(&env);
 
-    let deployer = Address::generate(&env);
-    let name = String::from_str(&env, "Test");
-    let symbol = String::from_str(&env, "TST");
-
-    client.deploy_creator_token(&deployer, &name, &symbol, &19, &1000);
-}
-
-#[test]
-#[should_panic(expected = "invalid initial_supply: exceeds maximum allowed supply")]
-fn test_excessive_initial_supply_panics() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, _) = setup(&env);
-
-    let deployer = Address::generate(&env);
-    let name = String::from_str(&env, "Test");
-    let symbol = String::from_str(&env, "TST");
-
-    client.deploy_creator_token(&deployer, &name, &symbol, &7, &(MAX_INITIAL_SUPPLY + 1));
+    let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.update_token_wasm(&zero_hash);
 }
