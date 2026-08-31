@@ -12,7 +12,7 @@ mod validation;
 pub use errors::{ContractError, RentError};
 use validation::{
     validate_address_list, validate_amount, validate_gov_parameter, validate_non_default_address,
-    validate_protocol_fee, validate_pubkey_32, validate_report_verdict, validate_signature, validate_u32_range,
+    validate_protocol_fee, validate_pubkey_32, validate_report_verdict, validate_reporter_can_report, validate_signature, validate_u32_range,
     validate_username, MAX_BIO_LEN, MAX_CONTENT_LEN, MAX_FEE_BPS, MAX_QUORUM,
 };
 
@@ -770,6 +770,20 @@ impl LinkoraContract {
         validate_non_default_address(&env, "admin", &admin);
         validate_non_default_address(&env, "account", &account);
         Self::require_role(&env, &admin, Role::Admin);
+
+        // Prevent removing the last admin or upgrader
+        if matches!(role, Role::Admin | Role::Upgrader) {
+            let count_with_role = Self::count_accounts_with_role(&env, role);
+            
+            // If this would be the last account with this role, reject the operation
+            if count_with_role <= 1 {
+                match role {
+                    Role::Admin => env.panic_with_error(ContractError::CannotRemoveLastAdmin),
+                    Role::Upgrader => env.panic_with_error(ContractError::CannotRemoveLastUpgrader),
+                    _ => {} // Should not reach here due to the match above
+                }
+            }
+        }
 
         let mut roles = Self::get_roles(&env);
         let current = roles.get(account.clone()).unwrap_or(0);
@@ -4123,6 +4137,21 @@ impl LinkoraContract {
         let roles = Self::get_roles(env);
         let current = roles.get(account.clone()).unwrap_or(0);
         current & Self::role_mask(role) != 0
+    }
+
+    /// Count how many accounts have the given role
+    fn count_accounts_with_role(env: &Env, role: Role) -> u32 {
+        let roles = Self::get_roles(env);
+        let role_mask = Self::role_mask(role);
+        let mut count = 0u32;
+        
+        for (_, account_roles) in roles.iter() {
+            if account_roles & role_mask != 0 {
+                count += 1;
+            }
+        }
+        
+        count
     }
 
     fn require_role(env: &Env, account: &Address, role: Role) {

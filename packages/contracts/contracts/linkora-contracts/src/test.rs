@@ -2099,6 +2099,117 @@ fn test_admin_can_grant_and_revoke_roles() {
     assert!(!client.has_role(&moderator, &Role::Moderator));
 }
 
+#[test]
+fn test_cannot_revoke_last_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    // Try to revoke the admin role from the only admin - should panic
+    let result = client.try_revoke_role(&admin, &admin, &Role::Admin);
+    assert!(result.is_err());
+    
+    // Admin should still have the role after failed revocation
+    assert!(client.has_role(&admin, &Role::Admin));
+}
+
+#[test]
+fn test_cannot_revoke_last_upgrader() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    // Admin initially has both Admin and Upgrader roles from initialization
+    assert!(client.has_role(&admin, &Role::Admin));
+    assert!(client.has_role(&admin, &Role::Upgrader));
+
+    // Try to revoke the upgrader role from the only upgrader (admin) - should panic
+    let result = client.try_revoke_role(&admin, &admin, &Role::Upgrader);
+    assert!(result.is_err());
+    
+    // Admin should still have the upgrader role after failed revocation
+    assert!(client.has_role(&admin, &Role::Upgrader));
+}
+
+#[test]
+fn test_can_revoke_admin_when_multiple_exist() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+    let admin2 = Address::generate(&env);
+
+    // Grant admin role to second account
+    client.grant_role(&admin, &admin2, &Role::Admin);
+    assert!(client.has_role(&admin2, &Role::Admin));
+
+    // Now we can revoke one admin since there are two
+    client.revoke_role(&admin, &admin2, &Role::Admin);
+    assert!(!client.has_role(&admin2, &Role::Admin));
+    
+    // Original admin should still have the role
+    assert!(client.has_role(&admin, &Role::Admin));
+}
+
+#[test]
+fn test_can_revoke_upgrader_when_multiple_exist() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+    let upgrader1 = Address::generate(&env);
+
+    // Admin initially has upgrader role, grant it to another account too
+    assert!(client.has_role(&admin, &Role::Upgrader));
+    client.grant_role(&admin, &upgrader1, &Role::Upgrader);
+    assert!(client.has_role(&upgrader1, &Role::Upgrader));
+
+    // Now we can revoke one upgrader since there are two
+    client.revoke_role(&admin, &upgrader1, &Role::Upgrader);
+    assert!(!client.has_role(&upgrader1, &Role::Upgrader));
+    
+    // Admin should still have the upgrader role
+    assert!(client.has_role(&admin, &Role::Upgrader));
+}
+
+#[test]
+fn test_can_revoke_non_critical_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+    let moderator = Address::generate(&env);
+    let pauser = Address::generate(&env);
+
+    // Grant non-critical roles
+    client.grant_role(&admin, &moderator, &Role::Moderator);
+    client.grant_role(&admin, &pauser, &Role::Pauser);
+    
+    assert!(client.has_role(&moderator, &Role::Moderator));
+    assert!(client.has_role(&pauser, &Role::Pauser));
+
+    // Should be able to revoke these even if they're the only ones with the role
+    client.revoke_role(&admin, &moderator, &Role::Moderator);
+    client.revoke_role(&admin, &pauser, &Role::Pauser);
+    
+    assert!(!client.has_role(&moderator, &Role::Moderator));
+    assert!(!client.has_role(&pauser, &Role::Pauser));
+}
+
+#[test]
+fn test_admin_can_remove_own_admin_role_with_backup() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+    let admin2 = Address::generate(&env);
+
+    // Grant admin role to second account
+    client.grant_role(&admin, &admin2, &Role::Admin);
+    
+    // Original admin can remove their own role since there's a backup
+    client.revoke_role(&admin, &admin, &Role::Admin);
+    
+    assert!(!client.has_role(&admin, &Role::Admin));
+    assert!(client.has_role(&admin2, &Role::Admin));
+}
+
 // Ignored: see test_upgrade_by_admin_succeeds — uploads the full contract wasm,
 // which exceeds the 128 KB test-host upload limit.
 #[test]
