@@ -45,6 +45,12 @@ export function Feed({ posts, loading, onLike, onTip, likedPosts = new Set() }: 
     action();
   };
 
+  // Create guarded callback wrappers for PostCard
+  const createGuardedCallback = (callback: ((postId: number) => void) | undefined, postId: number) => {
+    if (!callback) return undefined;
+    return () => guardedWrite(() => callback(postId));
+  };
+
   if (loading) {
     return (
       <div style={styles.container}>
@@ -74,31 +80,13 @@ export function Feed({ posts, loading, onLike, onTip, likedPosts = new Set() }: 
       )}
       {posts.map((post) => (
         <div key={post.id} style={styles.postWrap}>
-          <PostCard post={post} />
-          {(onLike || onTip) && (
-            <div style={styles.actions}>
-              {onLike && (
-                <button
-                  type="button"
-                  style={{ ...styles.actionButton, ...(paused ? styles.actionButtonDisabled : {}) }}
-                  disabled={paused}
-                  onClick={() => guardedWrite(() => onLike(Number(post.id)))}
-                >
-                  {likedPosts.has(Number(post.id)) ? "Liked" : "Like"}
-                </button>
-              )}
-              {onTip && (
-                <button
-                  type="button"
-                  style={{ ...styles.actionButton, ...(paused ? styles.actionButtonDisabled : {}) }}
-                  disabled={paused}
-                  onClick={() => guardedWrite(() => onTip(Number(post.id)))}
-                >
-                  Tip
-                </button>
-              )}
-            </div>
-          )}
+          <PostCard 
+            post={post}
+            onLike={createGuardedCallback(onLike, Number(post.id))}
+            onTip={createGuardedCallback(onTip, Number(post.id))}
+            isLiked={likedPosts.has(Number(post.id))}
+            disabled={paused}
+          />
         </div>
       ))}
     </div>
@@ -130,23 +118,6 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "var(--spacing-sm) var(--spacing-md)",
     marginBottom: "var(--spacing-md)",
     fontSize: "0.9rem",
-  },
-  actions: {
-    display: "flex",
-    gap: "var(--spacing-sm)",
-    padding: "var(--spacing-sm) 0",
-  },
-  actionButton: {
-    border: "1px solid var(--border)",
-    borderRadius: "8px",
-    background: "var(--muted)",
-    color: "var(--foreground)",
-    padding: "8px 12px",
-    cursor: "pointer",
-  },
-  actionButtonDisabled: {
-    opacity: 0.5,
-    cursor: "not-allowed",
   },
   empty: {
     textAlign: "center",
