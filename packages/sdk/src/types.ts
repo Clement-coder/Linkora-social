@@ -6,9 +6,14 @@
  */
 
 // Re-export all generated contract types (Profile, Post, Pool, GovParameter, etc.)
-export * from "./generated/types";
+export * from "./generated/types.js";
 
-/** Analytics attestation returned by the oracle service REST API. */
+/**
+ * Analytics attestation returned by the oracle service REST API.
+ *
+ * @deprecated This interface is not referenced anywhere in the codebase and
+ *   may be removed in a future major release.
+ */
 export interface AnalyticsAttestation {
   oracleName: string;
   reportHash: string;
@@ -58,7 +63,7 @@ export interface SimulationResult {
  *
  * @see https://stellar.github.io/js-stellar-base/Transaction.html
  */
-export inace TransactionLike {
+export interface TransactionLike {
   /**
    * Serialize the transaction to a base64-encoded XDR envelope string.
    * @param format Must be "base64" for Stellar network submission.

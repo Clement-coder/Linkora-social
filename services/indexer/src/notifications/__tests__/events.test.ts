@@ -113,7 +113,7 @@ describe("notification event projector", () => {
 
     await dispatchNotificationForBusEvent(
       {
-        query: jest.fn().mockResolvedValue({ rows: [{ dispatch_key: "42000|follow|GFOLLOWEE" }] }),
+        query: jest.fn().mockResolvedValue({ rows: [{ dispatch_key: "42-0|follow|GFOLLOWEE" }] }),
       } as never,
       service,
       busEvent("follow", {
@@ -143,5 +143,43 @@ describe("notification event projector", () => {
     );
 
     expect(sendPush).not.toHaveBeenCalled();
+  });
+
+  it("builds distinct dispatch keys for events that would collide under the old ledgerSequence * 1000 + eventIndex formula", async () => {
+    const sendPush = jest.fn().mockResolvedValue(undefined);
+    const service = new NotificationService({ sendPush });
+    await service.registerDeviceToken("GFOLLOWEE", "ExpoPushToken[token-3]", "ios");
+
+    const dispatchKeys: string[] = [];
+    const pool = {
+      query: jest.fn(async (sql: string, params?: unknown[]) => {
+        if (sql.includes("SELECT 1 FROM sent_notifications")) {
+          dispatchKeys.push(params?.[0] as string);
+        }
+        return { rows: [] };
+      }),
+    };
+
+    // Old formula: 42 * 1000 + 1000 === 43 * 1000 + 0 === 43000 — a collision.
+    const eventA: BusEvent = {
+      ...busEvent("follow", { follower: "GFOLLOWER_A", followee: "GFOLLOWEE" }),
+      ledgerSequence: 42,
+      eventIndex: 1000,
+    };
+    const eventB: BusEvent = {
+      ...busEvent("follow", { follower: "GFOLLOWER_B", followee: "GFOLLOWEE" }),
+      ledgerSequence: 43,
+      eventIndex: 0,
+    };
+
+    await dispatchNotificationForBusEvent(pool as never, service, eventA);
+    await dispatchNotificationForBusEvent(pool as never, service, eventB);
+
+    expect(dispatchKeys).toEqual([
+      "42-1000|follow|GFOLLOWEE",
+      "43-0|follow|GFOLLOWEE",
+    ]);
+    expect(dispatchKeys[0]).not.toBe(dispatchKeys[1]);
+    expect(sendPush).toHaveBeenCalledTimes(2);
   });
 });

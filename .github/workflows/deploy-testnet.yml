@@ -1,6 +1,7 @@
 name: Deploy Testnet
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -9,9 +10,25 @@ permissions:
   contents: read
 
 jobs:
+  secrets-check:
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - name: Check secrets
+        id: check
+        run: |
+          if [ -n "${{ secrets.ADMIN_SECRET }}" ] && [ -n "${{ secrets.TREASURY_ADDRESS }}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
     name: Build, Deploy, Codegen, Canary
     runs-on: ubuntu-latest
+    needs: secrets-check
+    if: needs.secrets-check.outputs.available == 'true'
     env:
       NETWORK: testnet
       ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
@@ -21,11 +38,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Validate required secrets
-        run: |
-          test -n "$ADMIN_SECRET" || { echo "::error::ADMIN_SECRET is required"; exit 1; }
-          test -n "$TREASURY_ADDRESS" || { echo "::error::TREASURY_ADDRESS is required"; exit 1; }
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -37,6 +49,9 @@ jobs:
         with:
           workspaces: packages/contracts
 
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libdbus-1-dev pkg-config libudev-dev libhidapi-dev
+
       - name: Install stellar-cli
         run: cargo install --locked stellar-cli
 
@@ -46,7 +61,9 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node version is pinned in .node-version (single source of truth
+          # across CI, setup.sh, and package.json engines fields).
+          node-version-file: ".node-version"
           cache: pnpm
           registry-url: "https://registry.npmjs.org"
 

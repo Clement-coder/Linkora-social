@@ -4,19 +4,31 @@ import { WalletProvider } from "@/components/WalletProvider";
 import { NavBar } from "@/components/NavBar";
 import { NotificationsProvider } from "@/contexts/NotificationsContext";
 import { OnboardingProvider } from "@/contexts/OnboardingContext";
+import { GuidedTourProvider } from "@/contexts/GuidedTourContext";
+import { GuidedTour } from "@/components/onboarding/GuidedTour";
 import { ThemeBootstrap } from "@/components/ThemeBootstrap";
 import { KeyboardShortcutsProvider } from "@/contexts/KeyboardShortcutsContext";
 import { KeyboardShortcutsModal } from "@/components/KeyboardShortcutsModal";
+import { ServiceWorkerRegistration } from "@/components/ServiceWorkerRegistration";
 
 export const metadata: Metadata = {
   title: "Linkora",
   description: "Decentralised social on Stellar",
+  icons: {
+    icon: [
+      { url: "/logo/logo-icon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", type: "image/x-icon" },
+    ],
+    shortcut: "/logo/logo-icon.svg",
+    apple: "/logo/logo-icon.svg",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
+        <ServiceWorkerRegistration />
         <a
           href="#main-content"
           className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:px-4 focus:py-2 focus:bg-violet-600 focus:text-white focus:rounded-lg focus:font-semibold focus:outline-none focus:ring-2 focus:ring-violet-400"
@@ -26,12 +38,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ThemeBootstrap />
         <WalletProvider>
           <OnboardingProvider>
-            <NotificationsProvider>
-              <NavBar />
-              <main id="main-content" tabIndex={-1} className="pb-16 md:pb-0">
-                {children}
-              </main>
-            </NotificationsProvider>
+            <GuidedTourProvider>
+              <NotificationsProvider>
+                <NavBar />
+                <main id="main-content" tabIndex={-1} className="pb-safe md:pb-0">
+                  {children}
+                </main>
+                <GuidedTour />
+              </NotificationsProvider>
+            </GuidedTourProvider>
           </OnboardingProvider>
         </WalletProvider>
       </body>
