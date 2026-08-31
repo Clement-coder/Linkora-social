@@ -1,5 +1,14 @@
+/**
+ * Utility functions for tag extraction and normalization in the indexer.
+ */
+
+/**
+ * Extract hashtag topics from post content.
+ * Returns an array of normalized lower-case tags without leading '#'.
+ */
 export function extractTags(content: string): string[] {
-  const matches = content.match(/#[a-zA-Z0-9_]+/g);
+  if (!content) return [];
+  const matches = content.match(/#[\w_]+/g);
   if (!matches) return [];
-  return Array.from(new Set(matches.map((t) => t.slice(1).toLowerCase())));
+  return Array.from(new Set(matches.map((tag) => tag.slice(1).toLowerCase())));
 }
