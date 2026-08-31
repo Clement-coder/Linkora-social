@@ -99,6 +99,26 @@ export default function PoolDetailPage() {
           >
             ↻ Refresh
           </button>
+          <Link
+            href={`/pools/${poolId}/analytics`}
+            style={{
+              padding: "var(--space-2) var(--space-4)",
+              background: "var(--color-primary)",
+              color: "white",
+              border: "none",
+              borderRadius: "var(--radius-lg)",
+              fontSize: "var(--text-sm)",
+              fontWeight: 600,
+              textDecoration: "none",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "var(--space-2)",
+              minHeight: "44px",
+              flexShrink: 0,
+            }}
+          >
+            📊 Analytics
+          </Link>
         </header>
 
         {/* Dashboard layout: left stats + right tabs */}

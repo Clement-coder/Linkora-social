@@ -20,15 +20,15 @@ export function ThemeSection() {
   }
 
   return (
-    <section className="bg-white rounded-lg border border-gray-200 p-6">
-      <h2 className="text-xl font-semibold mb-4">Appearance</h2>
+    <section className="bg-[var(--bg-secondary)] rounded-lg border border-[var(--border)] p-6">
+      <h2 className="text-xl font-semibold mb-4 text-[var(--text-primary)]">Appearance</h2>
       <div className="flex items-center justify-between gap-4">
         <div>
-          <p className="text-sm font-medium text-gray-900">Theme</p>
-          <p className="text-xs text-gray-500 mt-1">Choose how Linkora looks on this device.</p>
+          <p className="text-sm font-medium text-[var(--text-primary)]">Theme</p>
+          <p className="text-xs text-[var(--text-muted)] mt-1">Choose how Linkora looks on this device.</p>
         </div>
         <div
-          className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1"
+          className="inline-flex rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-1"
           role="group"
           aria-label="Choose theme"
         >
@@ -40,7 +40,7 @@ export function ThemeSection() {
               className={`min-w-[72px] rounded-md px-3 py-1.5 text-sm font-semibold transition-colors ${
                 theme === option
                   ? "bg-violet-600 text-white"
-                  : "text-gray-700 hover:bg-white hover:text-gray-900"
+                  : "text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
               }`}
               aria-pressed={theme === option}
             >

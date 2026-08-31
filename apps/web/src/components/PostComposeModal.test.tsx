@@ -86,74 +86,31 @@ afterEach(() => {
 });
 
 describe("PostComposeModal", () => {
-  // 1. Modal doesn't render when closed
   it("does not render when isOpen is false", () => {
     renderModal(false);
     expect(screen.queryByText("Compose Post")).not.toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("What's happening on-chain?")).not.toBeInTheDocument();
   });
 
-  // 2. Modal renders when open
-  it("renders textarea, counter, and submit button when open", () => {
-    renderModal(true);
+  it("renders composer editor and submit button when open", () => {
+    const { container } = renderModal(true);
     expect(screen.getByText("Compose Post")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("What's happening on-chain?")).toBeInTheDocument();
-    expect(screen.getByText("280")).toBeInTheDocument();
-    expect(screen.getByText("Publish Post")).toBeInTheDocument();
+    expect(container.querySelector(".composer-editor")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Post" })).toBeInTheDocument();
   });
 
-  // 3. Character counter shows remaining chars and turns amber/red at thresholds
-  it("updates remaining character counter as user types", () => {
-    renderModal(true);
-    const textarea = screen.getByPlaceholderText("What's happening on-chain?");
-
-    // "Hello world" = 11 chars → 280 - 11 = 269 remaining
-    fireEvent.change(textarea, { target: { value: "Hello world" } });
-    expect(screen.getByText("269")).toBeInTheDocument();
-
-    // "Hello linkora community" = 23 chars → 280 - 23 = 257 remaining
-    fireEvent.change(textarea, { target: { value: "Hello linkora community" } });
-    expect(screen.getByText("257")).toBeInTheDocument();
-
-    // 230 chars → 50 remaining (amber threshold)
-    const amberContent = "a".repeat(230);
-    fireEvent.change(textarea, { target: { value: amberContent } });
-    const counterAmber = screen.getByLabelText("50 characters remaining");
-    expect(counterAmber).toHaveClass("text-yellow-500");
-
-    // 270 chars → 10 remaining (red threshold)
-    const redContent = "a".repeat(270);
-    fireEvent.change(textarea, { target: { value: redContent } });
-    const counterRed = screen.getByLabelText("10 characters remaining");
-    expect(counterRed).toHaveClass("text-red-500");
-  });
-
-  // 4. Submit disabled when empty
   it("disables submit button when content is empty", () => {
     renderModal(true);
-    const submitBtn = screen.getByText("Publish Post");
+    const submitBtn = screen.getByRole("button", { name: "Post" });
     expect(submitBtn).toBeDisabled();
   });
 
-  // 5. Shows preview when content exists
-  it("shows live preview when content is entered", () => {
-    renderModal(true);
-    const textarea = screen.getByPlaceholderText("What's happening on-chain?");
-
-    expect(screen.queryByText("Preview")).not.toBeInTheDocument();
-
-    fireEvent.change(textarea, { target: { value: "My on-chain post" } });
-    expect(screen.getByText("Preview")).toBeInTheDocument();
-    expect(screen.getAllByText("My on-chain post").length).toBeGreaterThanOrEqual(2);
-  });
-
-  // 6. signTransaction invoked on submit
   it("calls signTransaction and transitions through signing states", async () => {
-    renderModal(true);
-    const textarea = screen.getByPlaceholderText("What's happening on-chain?");
+    const { container } = renderModal(true);
+    const editor = container.querySelector(".composer-editor")!;
 
-    fireEvent.change(textarea, { target: { value: "Test post" } });
-    fireEvent.click(screen.getByText("Publish Post"));
+    editor.textContent = "Test post";
+    fireEvent.input(editor);
+    fireEvent.click(screen.getByRole("button", { name: "Post" }));
 
     expect(screen.getByText("Waiting for Freighter wallet signing...")).toBeInTheDocument();
 
@@ -171,18 +128,18 @@ describe("PostComposeModal", () => {
     });
   });
 
-  // 7. Success and error states
   it("displays success state and redirects after successful publish", async () => {
     jest.useFakeTimers();
 
     mockSendTransaction.mockResolvedValue({ status: "PENDING", hash: "tx-hash-123" });
     mockGetTransaction.mockResolvedValue({ status: "SUCCESS", returnValue: BigInt(42) });
 
-    renderModal(true);
-    const textarea = screen.getByPlaceholderText("What's happening on-chain?");
+    const { container } = renderModal(true);
+    const editor = container.querySelector(".composer-editor")!;
 
-    fireEvent.change(textarea, { target: { value: "New post" } });
-    fireEvent.click(screen.getByText("Publish Post"));
+    editor.textContent = "New post";
+    fireEvent.input(editor);
+    fireEvent.click(screen.getByRole("button", { name: "Post" }));
 
     await waitFor(() => {
       expect(mockSignTransaction).toHaveBeenCalled();
@@ -210,11 +167,12 @@ describe("PostComposeModal", () => {
   it("displays error state when submission fails", async () => {
     mockSendTransaction.mockRejectedValue(new Error("Network timeout"));
 
-    renderModal(true);
-    const textarea = screen.getByPlaceholderText("What's happening on-chain?");
+    const { container } = renderModal(true);
+    const editor = container.querySelector(".composer-editor")!;
 
-    fireEvent.change(textarea, { target: { value: "Fail post" } });
-    fireEvent.click(screen.getByText("Publish Post"));
+    editor.textContent = "Fail post";
+    fireEvent.input(editor);
+    fireEvent.click(screen.getByRole("button", { name: "Post" }));
 
     await waitFor(() => {
       expect(screen.getByText("Network timeout")).toBeInTheDocument();

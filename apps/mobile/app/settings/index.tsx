@@ -1,13 +1,5 @@
 import React from "react";
-import {
-  Alert,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { useRouter } from "expo-router";
 
@@ -35,8 +27,13 @@ export default function SettingsScreen(): JSX.Element {
 
   const handleSaveRpc = async () => {
     setMessage(null);
-    await setRpcUrl(draftRpcUrl);
-    setMessage("RPC endpoint saved.");
+    try {
+      await setRpcUrl(draftRpcUrl);
+      setMessage("RPC endpoint saved.");
+    } catch (err) {
+      const text = err instanceof Error ? err.message : "Invalid RPC endpoint.";
+      Alert.alert("Invalid RPC endpoint", text);
+    }
   };
 
   const handleReset = async () => {
@@ -78,10 +75,7 @@ export default function SettingsScreen(): JSX.Element {
         <Text style={styles.sectionLabel}>Network</Text>
         <View style={styles.buttonRow}>
           <Pressable
-            style={[
-              styles.networkButton,
-              !isMainnet ? styles.networkButtonActive : null,
-            ]}
+            style={[styles.networkButton, !isMainnet ? styles.networkButtonActive : null]}
             onPress={() => setSelectedNetwork("TESTNET")}
             accessibilityRole="button"
             accessibilityLabel="Switch to Testnet"
@@ -136,9 +130,7 @@ export default function SettingsScreen(): JSX.Element {
       <View style={styles.section}>
         <Pressable
           style={styles.secondaryButton}
-          onPress={() =>
-            router.push("/settings/blocked" as Parameters<typeof router.push>[0])
-          }
+          onPress={() => router.push("/settings/blocked" as Parameters<typeof router.push>[0])}
         >
           <Text style={styles.secondaryButtonText}>Manage blocked users</Text>
         </Pressable>

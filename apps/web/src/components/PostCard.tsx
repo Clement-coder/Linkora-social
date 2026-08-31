@@ -11,6 +11,7 @@ export interface Post {
   like_count?: string | number;
   timestamp?: string | number;
   created_at?: string;
+  imageUrl?: string;
 }
 
 interface PostCardProps {
@@ -20,6 +21,7 @@ interface PostCardProps {
   onTip?: () => void;
   isLiked?: boolean;
   isTipping?: boolean;
+  tourAnchor?: boolean;
 }
 
 function escapeRegExp(value: string): string {
@@ -73,11 +75,19 @@ function formatDate(post: Post): string {
   return date ? date.toLocaleDateString() : "Unknown date";
 }
 
-function formatAuthor(author: string): string {
+export function formatAuthor(author: string): string {
   return author.length > 16 ? `${author.slice(0, 6)}...${author.slice(-4)}` : author;
 }
 
-export function PostCard({ post, query, onLike, onTip, isLiked, isTipping }: PostCardProps) {
+export function PostCard({
+  post,
+  query,
+  onLike,
+  onTip,
+  isLiked,
+  isTipping,
+  tourAnchor,
+}: PostCardProps) {
   const likeCount = getPostLikeCount(post);
   const [animateLikeCount, setAnimateLikeCount] = useState(false);
   const [previousLikeCount, setPreviousLikeCount] = useState(likeCount);
@@ -113,7 +123,10 @@ export function PostCard({ post, query, onLike, onTip, isLiked, isTipping }: Pos
         {highlightText(post.content, query)}
       </p>
 
-      <div className="flex items-center gap-6 border-t border-[var(--border)]/40 pt-3">
+      <div
+        className="flex items-center gap-6 border-t border-[var(--border)]/40 pt-3"
+        data-tour={tourAnchor ? "post-actions" : undefined}
+      >
         {/* Like Button */}
         <button
           onClick={onLike}

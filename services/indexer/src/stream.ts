@@ -19,6 +19,15 @@
 import { TokenBucket } from "./ratelimit";
 import { AdaptivePoll } from "./poller";
 import { detectGap } from "./gap";
+import type { BackfillCoordinator } from "./services/backfill-coordinator";
+import type { BackfillConfig } from "./config";
+import { isSerializationConflict } from "./pipeline";
+import {
+  StreamCircuitBreaker,
+  isRetriableStreamError,
+  DEFAULT_CIRCUIT_BREAKER_THRESHOLD,
+  DEFAULT_CIRCUIT_BREAKER_PROBE_INTERVAL_MS,
+} from "./stream-circuit";
 
 export interface RawEvent {
   type: string;
@@ -49,6 +58,32 @@ export interface StreamConfig {
   maxRetries?: number;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
+  /**
+   * Consecutive *persistent* failures required to open the circuit breaker.
+   * Transient transport faults never count toward it. Defaults to 10; set
+   * from `STREAM_CIRCUIT_BREAKER_THRESHOLD`.
+   */
+  circuitBreakerThreshold?: number;
+  /**
+   * How long the breaker stays open before letting a single probe through.
+   * Defaults to 30s; set from `STREAM_CIRCUIT_BREAKER_PROBE_INTERVAL_MS`.
+   */
+  circuitBreakerProbeIntervalMs?: number;
+  /**
+   * Optional backfill configuration used by the mid-stream gap detector to
+   * enforce depth limits and emit alerts. When omitted, the legacy unbounded
+   * backfill behaviour is used.
+   */
+  backfillConfig?: Pick<
+    BackfillConfig,
+    "maxDepthLedgers" | "alertThreshold" | "gapConfirmationLedgers"
+  >;
+  /**
+   * Optional backfill coordinator. When provided, mid-stream gap recovery is
+   * delegated to it (enabling depth limits, rate limiting, and the circuit
+   * breaker). When absent, a raw fetchRange is used (legacy behaviour).
+   */
+  backfillCoordinator?: BackfillCoordinator;
 }
 
 /**
@@ -223,7 +258,10 @@ export function getBackfillState(): BackfillState {
  * the processed cursor lags behind the RPC's current ledger.
  */
 export async function backfillStartupGap(
-  config: Pick<StreamConfig, "rpcUrl" | "contractId" | "maxRetries" | "backoffBaseMs" | "backoffMaxMs">,
+  config: Pick<
+    StreamConfig,
+    "rpcUrl" | "contractId" | "maxRetries" | "backoffBaseMs" | "backoffMaxMs"
+  >,
   fromLedger: number,
   toLedger: number,
   processBatch: BatchProcessor,
@@ -257,7 +295,15 @@ export async function backfillStartupGap(
   let current = fromLedger;
   while (current <= toLedger && !signal.aborted) {
     const batchTo = Math.min(current + BATCH_SIZE - 1, toLedger);
-    const events = await fetchRange(resolved, backoffCfg, config.rpcUrl, config.contractId, current, batchTo, signal);
+    const events = await fetchRange(
+      resolved,
+      backoffCfg,
+      config.rpcUrl,
+      config.contractId,
+      current,
+      batchTo,
+      signal
+    );
     if (events.length > 0) {
       await processBatch(events);
     }
@@ -376,6 +422,11 @@ export async function streamEvents(
   let cursor = config.initialCursor ?? 0;
   let startLedger = config.startLedger;
   let pagingCursor: string | undefined;
+  const breaker = new StreamCircuitBreaker({
+    threshold: config.circuitBreakerThreshold ?? DEFAULT_CIRCUIT_BREAKER_THRESHOLD,
+    probeIntervalMs:
+      config.circuitBreakerProbeIntervalMs ?? DEFAULT_CIRCUIT_BREAKER_PROBE_INTERVAL_MS,
+  });
 
   console.log(
     `[stream] Starting from ledger ${startLedger} (cursor ${cursor}), contract=${config.contractId}`
@@ -393,11 +444,15 @@ export async function streamEvents(
         signal
       );
 
+      breaker.recordSuccess();
+
       if (signal.aborted) break;
 
       // ── Gap detection ────────────────────────────────────────────────────
       const firstLedger = events[0]?.ledger;
-      const gap = detectGap(firstLedger, cursor);
+      // Pass the RPC's latest considered ledger so sub-finalisation lag is
+      // reported as "still catching up" rather than a durable gap.
+      const gap = detectGap(firstLedger, cursor, config.backfillConfig, latestLedger);
       if (gap.hasGap && gap.fromLedger !== undefined && gap.toLedger !== undefined) {
         console.warn(
           JSON.stringify({
@@ -407,19 +462,52 @@ export async function streamEvents(
             receivedLedger: firstLedger,
             missingFrom: gap.fromLedger,
             missingTo: gap.toLedger,
+            gapSize: gap.gapSize,
+            exceedsMaxDepth: gap.exceedsMaxDepth ?? false,
           })
         );
-        const backfilled = await fetchRange(
-          resolved,
-          backoffCfg,
-          config.rpcUrl,
-          config.contractId,
-          gap.fromLedger,
-          gap.toLedger,
-          signal
-        );
-        if (backfilled.length > 0) {
-          cursor = await processBatch(backfilled);
+
+        if (gap.exceedsMaxDepth) {
+          // Alert already emitted by detectGap. Skip auto-backfill.
+          console.error(
+            JSON.stringify({
+              metric: "backfill_skipped",
+              reason: "gap_too_large",
+              fromLedger: gap.fromLedger,
+              toLedger: gap.toLedger,
+              gapSize: gap.gapSize,
+            })
+          );
+        } else if (config.backfillCoordinator) {
+          // Delegate to the coordinator (depth limits + rate limiting + circuit breaker).
+          await config.backfillCoordinator.recoverGap(
+            gap.fromLedger,
+            gap.toLedger,
+            processBatch,
+            signal
+          );
+          // Advance the stream cursor to what the coordinator actually
+          // committed (never the requested gap boundary), so the next
+          // iteration's gap detection is based on durable progress and never
+          // re-flags — or skips past — ledgers that were never persisted.
+          const committed = config.backfillCoordinator.progress.lastCommittedLedger;
+          if (committed !== undefined) {
+            cursor = Math.max(cursor, committed);
+          }
+        } else {
+          // Legacy path: raw fetchRange with no depth limits.
+          const backfilled = await fetchRange(
+            resolved,
+            backoffCfg,
+            config.rpcUrl,
+            config.contractId,
+            gap.fromLedger,
+            gap.toLedger,
+            signal
+          );
+          if (backfilled.length > 0) {
+            cursor = await processBatch(backfilled);
+          }
         }
       }
 
@@ -442,7 +530,39 @@ export async function streamEvents(
       startLedger = Math.max(latestLedger, cursor + 1);
       await waitWithAbort(poll.next(events.length), signal);
     } catch (err) {
+      if (isSerializationConflict(err)) {
+        console.warn(
+          JSON.stringify({
+            metric: "serialization_conflict",
+            message: "Retryable database conflict will not count toward the stream circuit breaker",
+            code: (err as { code?: unknown }).code,
+          })
+        );
+        await waitWithAbort(poll.intervalMs, signal);
+        continue;
+      }
+
+      if (isRetriableStreamError(err)) {
+        // Transport blip (RPC restart, reset, timeout, 429/5xx). Retried
+        // indefinitely: these are expected in normal operation and must not
+        // be able to halt the indexer on their own.
+        breaker.recordRetriableFailure(err);
+        await waitWithAbort(poll.intervalMs, signal);
+        continue;
+      }
+
+      const opened = breaker.recordPersistentFailure(err);
       console.error("[stream] Error processing batch:", err);
+
+      if (opened) {
+        // Open: wait out the probe interval, then go half-open so the next
+        // loop iteration is a single probe. The stream is never terminated —
+        // recovery no longer needs an operator.
+        await waitWithAbort(breaker.probeIntervalMs, signal);
+        breaker.beginProbe();
+        continue;
+      }
+
       await waitWithAbort(poll.intervalMs, signal);
     }
   }

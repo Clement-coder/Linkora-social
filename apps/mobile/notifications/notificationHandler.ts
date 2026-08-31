@@ -8,11 +8,20 @@ Notifications.setNotificationHandler({
     shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
   }),
 });
 
 export interface NotificationPayload {
-  type: "NEW_FOLLOWER" | "TIP_RECEIVED" | "LIKE_RECEIVED" | "POOL_ACTIVITY";
+  type:
+    | "NEW_FOLLOWER"
+    | "TIP_RECEIVED"
+    | "LIKE_RECEIVED"
+    | "POOL_ACTIVITY"
+    | "POST_REPORTED"
+    | "REPORT_DISMISSED"
+    | "POST_REMOVED_BY_MODERATION";
   followerAddress?: string;
   senderAddress?: string;
   amount?: string;
@@ -20,8 +29,13 @@ export interface NotificationPayload {
   poolId?: string;
   postId?: string;
   activityType?: string;
+  reason?: string;
+  moderatorNotes?: string;
   deepLink?: string;
 }
+
+/** Screen shown when a notification's payload can't be resolved to a specific route. */
+const FALLBACK_ROUTE = "/(tabs)/explore";
 
 function navigateToDeepLink(value?: string): boolean {
   if (!value) {
@@ -47,6 +61,38 @@ function navigateToDeepLink(value?: string): boolean {
   return true;
 }
 
+/**
+ * Explicit notification type -> route fallback, used when `deepLink` is missing or
+ * fails to parse. Centralized here so route-building logic doesn't drift between the
+ * notification handler and `utils/deepLinks.ts`.
+ */
+function fallbackRouteFor(data: NotificationPayload): string | null {
+  switch (data.type) {
+    case "NEW_FOLLOWER":
+      return data.followerAddress ? `/profile/${data.followerAddress}` : null;
+    case "TIP_RECEIVED":
+    case "LIKE_RECEIVED":
+    case "POST_REPORTED":
+    case "REPORT_DISMISSED":
+    case "POST_REMOVED_BY_MODERATION":
+      return data.postId ? `/post/${data.postId}` : null;
+    case "POOL_ACTIVITY":
+      return data.poolId ? `/pools/${data.poolId}` : null;
+    default:
+      return null;
+  }
+}
+
+/** Navigate to the screen a tapped notification should open, with a safe fallback. */
+function navigateForNotification(data: NotificationPayload): void {
+  if (navigateToDeepLink(data.deepLink)) {
+    return;
+  }
+
+  const fallback = fallbackRouteFor(data);
+  router.push((fallback ?? FALLBACK_ROUTE) as Parameters<typeof router.push>[0]);
+}
+
 export function setupNotificationListeners() {
   // Listener for foreground notifications
   const notificationListener = Notifications.addNotificationReceivedListener((notification) => {
@@ -55,48 +101,19 @@ export function setupNotificationListeners() {
 
   // Listener for notification taps (when user interacts with a notification)
   const responseListener = Notifications.addNotificationResponseReceivedListener((response) => {
-    const data = response.notification.request.content.data as NotificationPayload;
+    const data = response.notification.request.content.data as unknown as NotificationPayload;
     console.log("Notification response (tap) received:", data);
 
-    if (!data || !data.type) return;
-
-    switch (data.type) {
-      case "NEW_FOLLOWER":
-        if (navigateToDeepLink(data.deepLink)) {
-          break;
-        }
-        if (data.followerAddress) {
-          router.push(`/profile/${data.followerAddress}` as Parameters<typeof router.push>[0]);
-        }
-        break;
-      case "TIP_RECEIVED":
-        if (navigateToDeepLink(data.deepLink)) {
-          break;
-        }
-        if (data.postId) {
-          router.push(`/post/${data.postId}` as Parameters<typeof router.push>[0]);
-        }
-        break;
-      case "LIKE_RECEIVED":
-        if (navigateToDeepLink(data.deepLink)) {
-          break;
-        }
-        if (data.postId) {
-          router.push(`/post/${data.postId}` as Parameters<typeof router.push>[0]);
-        }
-        break;
-      case "POOL_ACTIVITY":
-        if (data.poolId) {
-          router.push(`/pools/${data.poolId}` as Parameters<typeof router.push>[0]);
-        }
-        break;
-      default:
-        console.warn("Unknown notification type:", data.type);
+    if (!data || !data.type) {
+      router.push(FALLBACK_ROUTE as Parameters<typeof router.push>[0]);
+      return;
     }
+
+    navigateForNotification(data);
   });
 
   return () => {
-    Notifications.removeNotificationSubscription(notificationListener);
-    Notifications.removeNotificationSubscription(responseListener);
+    notificationListener.remove();
+    responseListener.remove();
   };
 }

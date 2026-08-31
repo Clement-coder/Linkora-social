@@ -1,11 +1,39 @@
 import { Router, Request, Response } from "express";
 import { NotificationService } from "../../notifications/service";
 import { requireStellarAuth } from "../../middleware/stellarAuth";
+import { validateBody } from "../../middleware/validate";
+import { rateLimitWrite } from "../../middleware/rateLimit";
+import { z } from "zod";
+import { stellarAddressSchema } from "@linkora/types/src/schemas";
+import { unauthorizedError, internalError, forbiddenError } from "@linkora/types/src/errors";
 
-const ADDRESS_PATTERN = /^G[A-Z2-7]{55}$/;
-const TOKEN_PATTERN =
-  /^ExponentPushToken\[[^\]]+\]$|^ExpoPushToken\[[^\]]+\]$|^[A-Za-z0-9:_\-[\]]{8,256}$|^\{.*\}$/;
-const PLATFORMS = new Set(["ios", "android", "web"]);
+const PLATFORMS = ["ios", "android", "web"] as const;
+
+const registerDeviceSchema = z.object({
+  address: stellarAddressSchema,
+  token: z.string().min(1, "token is required"),
+  platform: z.enum(PLATFORMS),
+});
+
+const deregisterDeviceSchema = z.object({
+  address: stellarAddressSchema,
+  token: z.string().min(1, "token is required"),
+});
+
+const preferencesSchema = z.object({
+  browserPushEnabled: z.boolean().optional().default(false),
+  newFollowers: z.boolean().optional().default(true),
+  newLikes: z.boolean().optional().default(true),
+  newComments: z.boolean().optional().default(true),
+  directMessages: z.boolean().optional().default(true),
+  poolActivity: z.boolean().optional().default(true),
+  governanceUpdates: z.boolean().optional().default(true),
+});
+
+const updatePreferencesSchema = z.object({
+  preferences: preferencesSchema,
+  subscription: z.union([z.string(), z.record(z.unknown())]).optional(),
+});
 
 const DEFAULT_PREFERENCES = {
   browserPushEnabled: false,
@@ -20,49 +48,67 @@ const DEFAULT_PREFERENCES = {
 export function createNotificationsRouter(service: NotificationService): Router {
   const router = Router();
 
-  router.post("/register", async (req: Request, res: Response): Promise<void> => {
-    const { address, token, platform } = req.body as {
-      address?: unknown;
-      token?: unknown;
-      platform?: unknown;
-    };
+  router.post(
+    "/register",
+    requireStellarAuth,
+    rateLimitWrite,
+    validateBody(registerDeviceSchema),
+    async (req: Request, res: Response): Promise<void> => {
+      const authenticatedAddress = req.context?.stellarAddress;
+      if (!authenticatedAddress) {
+        const err = unauthorizedError("Unauthorized");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+        return;
+      }
 
-    if (typeof address !== "string" || !ADDRESS_PATTERN.test(address)) {
-      res
-        .status(400)
-        .json({ error: "address must be a Stellar public key", code: "INVALID_ADDRESS" });
-      return;
+      const { address, token, platform } = req.body as z.infer<typeof registerDeviceSchema>;
+
+      if (address !== authenticatedAddress) {
+        const err = forbiddenError("Cannot register tokens for another address");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+        return;
+      }
+
+      try {
+        await service.registerDeviceToken(address, token, platform);
+        res.status(204).send();
+      } catch (error) {
+        const err = internalError("Failed to register device token");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+      }
     }
+  );
 
-    if (typeof token !== "string" || !TOKEN_PATTERN.test(token)) {
-      res.status(400).json({ error: "token is required", code: "INVALID_TOKEN" });
-      return;
+  router.post(
+    "/deregister",
+    requireStellarAuth,
+    rateLimitWrite,
+    validateBody(deregisterDeviceSchema),
+    async (req: Request, res: Response): Promise<void> => {
+      const authenticatedAddress = req.context?.stellarAddress;
+      if (!authenticatedAddress) {
+        const err = unauthorizedError("Unauthorized");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+        return;
+      }
+
+      const { address, token } = req.body as z.infer<typeof deregisterDeviceSchema>;
+
+      if (address !== authenticatedAddress) {
+        const err = forbiddenError("Cannot deregister tokens for another address");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+        return;
+      }
+
+      try {
+        await service.deregisterDeviceToken(address, token);
+        res.status(204).send();
+      } catch (error) {
+        const err = internalError("Failed to deregister device token");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+      }
     }
-
-    if (typeof platform !== "string" || !PLATFORMS.has(platform)) {
-      res
-        .status(400)
-        .json({ error: "platform must be ios, android, or web", code: "INVALID_PLATFORM" });
-      return;
-    }
-
-    await service.registerDeviceToken(address, token, platform);
-    res.status(204).send();
-  });
-
-  router.post("/deregister", async (req: Request, res: Response): Promise<void> => {
-    const { address } = req.body as { address?: unknown };
-
-    if (typeof address !== "string" || !ADDRESS_PATTERN.test(address)) {
-      res
-        .status(400)
-        .json({ error: "address must be a Stellar public key", code: "INVALID_ADDRESS" });
-      return;
-    }
-
-    await service.deregisterDeviceToken(address);
-    res.status(204).send();
-  });
+  );
 
   router.get(
     "/preferences",
@@ -70,7 +116,8 @@ export function createNotificationsRouter(service: NotificationService): Router 
     async (req: Request, res: Response): Promise<void> => {
       const address = req.context?.stellarAddress;
       if (!address) {
-        res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" });
+        const err = unauthorizedError("Unauthorized");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
         return;
       }
 
@@ -78,7 +125,8 @@ export function createNotificationsRouter(service: NotificationService): Router 
         const prefs = await service.getPreferences(address);
         res.json(prefs || { ...DEFAULT_PREFERENCES, address });
       } catch (error) {
-        res.status(500).json({ error: "Failed to fetch preferences", code: "INTERNAL_ERROR" });
+        const err = internalError("Failed to fetch preferences");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
       }
     }
   );
@@ -86,32 +134,16 @@ export function createNotificationsRouter(service: NotificationService): Router 
   router.post(
     "/preferences",
     requireStellarAuth,
+    validateBody(updatePreferencesSchema),
     async (req: Request, res: Response): Promise<void> => {
       const address = req.context?.stellarAddress;
       if (!address) {
-        res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" });
+        const err = unauthorizedError("Unauthorized");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
         return;
       }
 
-      const { preferences, subscription } = req.body as {
-        preferences?: {
-          browserPushEnabled: boolean;
-          newFollowers: boolean;
-          newLikes: boolean;
-          newComments: boolean;
-          directMessages: boolean;
-          poolActivity: boolean;
-          governanceUpdates: boolean;
-        };
-        subscription?: any;
-      };
-
-      if (!preferences || typeof preferences !== "object") {
-        res
-          .status(400)
-          .json({ error: "preferences object is required", code: "INVALID_PREFERENCES" });
-        return;
-      }
+      const { preferences, subscription } = req.body as z.infer<typeof updatePreferencesSchema>;
 
       try {
         await service.savePreferences(address, preferences);
@@ -120,13 +152,14 @@ export function createNotificationsRouter(service: NotificationService): Router 
           const tokenStr =
             typeof subscription === "string" ? subscription : JSON.stringify(subscription);
           await service.registerDeviceToken(address, tokenStr, "web");
-        } else {
-          await service.deregisterDeviceToken(address);
+        } else if (!preferences.browserPushEnabled) {
+          await service.deregisterWebToken(address);
         }
 
         res.status(200).json({ success: true });
       } catch (error) {
-        res.status(500).json({ error: "Failed to save preferences", code: "INTERNAL_ERROR" });
+        const err = internalError("Failed to save preferences");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
       }
     }
   );

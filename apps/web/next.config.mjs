@@ -5,7 +5,7 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  transpilePackages: ['linkora-sdk'],
+  transpilePackages: ['linkora-sdk', '@linkora/types'],
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -19,6 +19,10 @@ const nextConfig = {
       __dirname,
       '../../packages/sdk/src',
     );
+    // The SDK source uses ESM `.js` specifiers (which become `.ts` files here).
+    config.resolve.extensionAlias = {
+      '.js': ['.ts', '.tsx', '.js'],
+    };
     return config;
   },
 };

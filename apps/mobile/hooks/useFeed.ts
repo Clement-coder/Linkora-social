@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Post } from "../components/PostCard";
-import { useNetwork } from "./useNetwork";
 import { initDatabase, getCachedPosts, evictStaleCache } from "../utils/db";
 import { fetchAndCachePosts, syncPendingPosts } from "../utils/sync";
 
@@ -46,7 +45,6 @@ export interface UseFeedReturn {
 }
 
 export function useFeed(): UseFeedReturn {
-  const { contractId, rpcUrl } = useNetwork();
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +52,7 @@ export function useFeed(): UseFeedReturn {
 
   const offsetRef = useRef(0);
   const loadingRef = useRef(false);
+  const loadedPostsRef = useRef(0);
 
   // Load posts from SQLite cache
   const loadFromCache = useCallback(async (limit: number, replace: boolean) => {
@@ -64,6 +63,7 @@ export function useFeed(): UseFeedReturn {
       setPosts((prev) => {
         const next = replace ? cached : [...prev, ...cached];
         offsetRef.current = next.length;
+        loadedPostsRef.current = next.length;
         return next;
       });
       setHasMore(cached.length >= limit);
@@ -86,7 +86,7 @@ export function useFeed(): UseFeedReturn {
 
         // 2. Fetch remote page and upsert to SQLite
         const offset = replace ? 0 : offsetRef.current;
-        await fetchAndCachePosts(PAGE_SIZE, offset, contractId, rpcUrl);
+        await fetchAndCachePosts(PAGE_SIZE, offset);
 
         // 3. Evict stale rows periodically on initial refresh
         if (replace) {
@@ -94,20 +94,21 @@ export function useFeed(): UseFeedReturn {
         }
 
         // 4. Reload from SQLite (the entire loaded list so far, to refresh all visible posts)
-        const currentLoadedCount = replace ? PAGE_SIZE : posts.length + PAGE_SIZE;
+        const currentLoadedCount = replace ? PAGE_SIZE : loadedPostsRef.current + PAGE_SIZE;
         const cached = await getCachedPosts(currentLoadedCount, 0);
         setPosts(cached);
         offsetRef.current = cached.length;
+        loadedPostsRef.current = cached.length;
         setHasMore(cached.length >= currentLoadedCount);
 
         // 5. Fire background sync for pending posts
-        void syncPendingPosts(contractId, rpcUrl).then(() => {
+        void syncPendingPosts().then(() => {
           notifyFeedUpdate();
         });
       } catch (err) {
         console.warn("Network sync failed, displaying cached data:", err);
         // Fallback: just load from cache if we haven't already
-        if (posts.length === 0) {
+        if (loadedPostsRef.current === 0) {
           await loadFromCache(PAGE_SIZE, true);
         }
         setError("Offline mode. Serving cached posts.");
@@ -116,7 +117,7 @@ export function useFeed(): UseFeedReturn {
         loadingRef.current = false;
       }
     },
-    [contractId, rpcUrl, posts.length, loadFromCache]
+    [loadFromCache]
   );
 
   // Initial load
@@ -144,14 +145,15 @@ export function useFeed(): UseFeedReturn {
       const cached = await getCachedPosts(limit, 0);
       setPosts(cached);
       offsetRef.current = cached.length;
+      loadedPostsRef.current = cached.length;
     });
   }, [posts.length]);
 
   const loadMore = useCallback(() => {
-    if (!loading && hasMore) {
+    if (!loadingRef.current && hasMore) {
       void syncWithNetwork(false);
     }
-  }, [loading, hasMore, syncWithNetwork]);
+  }, [hasMore, syncWithNetwork]);
 
   const refresh = useCallback(() => {
     void syncWithNetwork(true);

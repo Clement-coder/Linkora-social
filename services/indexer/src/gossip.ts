@@ -10,10 +10,15 @@
  * DIVERGENCE_THRESHOLD (default: 2): if >= this many peers agree on a root
  * that differs from the local root, the local node self-fences (stops serving
  * API traffic) and emits a SELF_FENCED alert.
+ *
+ * When divergence is detected, the node automatically replays missed events
+ * from the Stellar RPC for the missing ledger range, then unfences and
+ * resumes normal operation.
  */
 
 import { Pool as PgPool } from "pg";
 import { getStateRoot } from "./stateRoot";
+import { backfillStartupGap, type BatchProcessor } from "./stream";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -57,20 +62,19 @@ async function fetchPeerRoot(peerUrl: string, ledger: number): Promise<PeerState
 
 /**
  * Binary-search over [low, high] to find the first ledger where local and
- * peer roots diverge, then log the result for operator action.
- *
- * NOTE: Automatic event replay is not yet implemented (tracked in issue #536).
- * After identifying the first diverging ledger, this function logs
- * RECONCILIATION_REQUIRES_REPLAY so that operators know the node must be
- * manually re-synced from that ledger. The node remains fenced until an
- * operator intervenes.
+ * peer roots diverge, then automatically replay events from the Stellar RPC
+ * to bring the node back into sync.
  */
 async function reconcile(
   pg: PgPool,
   peerUrl: string,
   divergingLedger: number,
   localRoot: string,
-  peerRoot: string
+  peerRoot: string,
+  rpcUrl: string,
+  contractId: string,
+  processBatch: BatchProcessor,
+  signal: AbortSignal
 ): Promise<void> {
   console.log(
     JSON.stringify({
@@ -103,32 +107,116 @@ async function reconcile(
     }
   }
 
-  // Automatic replay from the diverging ledger is not yet implemented.
-  // Log the required action so the operator can trigger a manual re-sync.
-  // TODO(#536): implement event replay by re-fetching Soroban events from
-  // `firstDivergingLedger` via the RPC stream and re-indexing into PostgreSQL.
+  const firstDivergingLedger = lo;
+
   console.log(
     JSON.stringify({
-      event: "RECONCILIATION_REQUIRES_REPLAY",
-      firstDivergingLedger: lo,
-      action: "Manual re-sync required: restart the indexer with REPLAY_FROM_LEDGER=" + lo,
+      event: "RECONCILIATION_REPLAY_START",
+      firstDivergingLedger,
+      currentLedger: divergingLedger,
     })
   );
+
+  // Fetch the latest ledger from RPC to determine the replay range.
+  try {
+    const rpcRes = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getLatestLedger", params: {} }),
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!rpcRes.ok) {
+      console.error(
+        JSON.stringify({
+          event: "RECONCILIATION_REPLAY_FAILED",
+          reason: "Failed to fetch latest ledger from RPC",
+          status: rpcRes.status,
+        })
+      );
+      return;
+    }
+
+    const rpcJson = (await rpcRes.json()) as { result?: { sequence: number } };
+    const latestLedger = rpcJson.result?.sequence ?? divergingLedger;
+
+    if (latestLedger < firstDivergingLedger) {
+      console.log(
+        JSON.stringify({
+          event: "RECONCILIATION_REPLAY_SKIPPED",
+          reason: "RPC latest ledger is before first diverging ledger",
+          firstDivergingLedger,
+          latestLedger,
+        })
+      );
+      return;
+    }
+
+    // Replay events from the first diverging ledger to the latest available.
+    await backfillStartupGap(
+      {
+        rpcUrl,
+        contractId,
+        maxRetries: 6,
+        backoffBaseMs: 250,
+        backoffMaxMs: 10_000,
+      },
+      firstDivergingLedger,
+      latestLedger,
+      processBatch,
+      signal
+    );
+
+    // Unfence after successful replay — the node is now in sync.
+    fenced = false;
+
+    console.log(
+      JSON.stringify({
+        event: "RECONCILIATION_REPLAY_COMPLETE",
+        firstDivergingLedger,
+        latestLedger,
+        replayedLedgers: latestLedger - firstDivergingLedger + 1,
+      })
+    );
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        event: "RECONCILIATION_REPLAY_FAILED",
+        reason: err instanceof Error ? err.message : String(err),
+        firstDivergingLedger,
+      })
+    );
+  }
 }
 
 // ── Gossip loop ───────────────────────────────────────────────────────────────
 
+export interface GossipDeps {
+  rpcUrl: string;
+  contractId: string;
+  processBatch: BatchProcessor;
+}
+
 /**
  * Start the gossip loop. Runs until the abort signal fires.
  * Fetches the latest local state root and compares it against each peer.
+ * When divergence is detected, automatically replays missed events from the
+ * Stellar RPC and unfences the node.
  */
-export async function startGossip(pg: PgPool, signal: AbortSignal): Promise<void> {
+export async function startGossip(
+  pg: PgPool,
+  signal: AbortSignal,
+  deps?: GossipDeps
+): Promise<void> {
   if (PEERS.length === 0) {
     console.log("[gossip] No peers configured (INDEXER_PEERS is empty). Gossip disabled.");
     return;
   }
 
   console.log(`[gossip] Starting gossip with peers: ${PEERS.join(", ")}`);
+  if (deps) {
+    console.log(`[gossip] Auto-replay enabled (rpcUrl=${deps.rpcUrl})`);
+  }
 
   while (!signal.aborted) {
     await new Promise<void>((resolve) => {
@@ -190,11 +278,54 @@ export async function startGossip(pg: PgPool, signal: AbortSignal): Promise<void
             localRoot,
           })
         );
+
+        // If deps are provided, attempt automatic replay instead of staying fenced.
+        if (deps) {
+          await reconcile(
+            pg,
+            disagreeingPeerUrl,
+            localLedger,
+            localRoot,
+            disagreeingPeerRoot,
+            deps.rpcUrl,
+            deps.contractId,
+            deps.processBatch,
+            signal
+          );
+        } else {
+          console.log(
+            JSON.stringify({
+              event: "RECONCILIATION_REQUIRES_REPLAY",
+              firstDivergingLedger: localLedger,
+              action: "Manual re-sync required: restart the indexer with REPLAY_FROM_LEDGER=" + localLedger,
+            })
+          );
+        }
         break;
       }
 
       if (disagreements > 0) {
-        await reconcile(pg, disagreeingPeerUrl, localLedger, localRoot, disagreeingPeerRoot);
+        if (deps) {
+          await reconcile(
+            pg,
+            disagreeingPeerUrl,
+            localLedger,
+            localRoot,
+            disagreeingPeerRoot,
+            deps.rpcUrl,
+            deps.contractId,
+            deps.processBatch,
+            signal
+          );
+        } else {
+          console.log(
+            JSON.stringify({
+              event: "RECONCILIATION_REQUIRES_REPLAY",
+              firstDivergingLedger: localLedger,
+              action: "Manual re-sync required: restart the indexer with REPLAY_FROM_LEDGER=" + localLedger,
+            })
+          );
+        }
       }
     } catch (err) {
       console.error("[gossip] Error during gossip cycle:", err);

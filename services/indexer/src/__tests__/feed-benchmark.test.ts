@@ -6,13 +6,17 @@ import request from "supertest";
 /**
  * Benchmark test for feed endpoints
  * Target: p99 latency < 100ms at 1000 concurrent requests
+ *
+ * Requires a live PostgreSQL database (TEST_DATABASE_URL or DATABASE_URL).
+ * Skipped automatically when no database URL is configured.
  */
+const databaseUrl = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
+
 describe("Feed Endpoints Benchmark", () => {
   let app: any;
   let pg: Pool;
 
   beforeAll(async () => {
-    const databaseUrl = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
     if (!databaseUrl) {
       throw new Error("TEST_DATABASE_URL or DATABASE_URL required for benchmark tests");
     }
@@ -25,7 +29,7 @@ describe("Feed Endpoints Benchmark", () => {
   });
 
   describe("GET /api/feed/explore", () => {
-    it("should handle concurrent requests efficiently", async () => {
+    (databaseUrl ? it : it.skip)("should handle concurrent requests efficiently", async () => {
       const concurrentRequests = 100;
       const latencies: number[] = [];
 
@@ -56,7 +60,7 @@ describe("Feed Endpoints Benchmark", () => {
   });
 
   describe("GET /api/feed/following/:address", () => {
-    it("should handle concurrent requests efficiently", async () => {
+    (databaseUrl ? it : it.skip)("should handle concurrent requests efficiently", async () => {
       const concurrentRequests = 100;
       const latencies: number[] = [];
       const testAddress = "GTEST1234567890";
