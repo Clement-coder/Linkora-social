@@ -10,6 +10,7 @@ import { validateAmount, validateStellarAddress } from "@/lib/validate";
 import { FieldError } from "@/components/forms/FieldError";
 import { OnboardingGuard } from "@/components/onboarding/OnboardingGuard";
 import { AnimatedList } from "@/components/AnimatedList";
+import { fetchUserLikes } from "@/lib/api";
 
 /* ────────────────────────────────────────────────────────────────────────── */
 /*  Config & Constants                                                       */
@@ -28,15 +29,19 @@ interface InteractivePostCardProps {
   post: Post;
   currentUserAddress: string | null;
   onTipClick: (post: Post) => void;
+  userLikes: Set<string>;
 }
 
-function InteractivePostCard({ post, currentUserAddress, onTipClick }: InteractivePostCardProps) {
+function InteractivePostCard({ post, currentUserAddress, onTipClick, userLikes }: InteractivePostCardProps) {
   const [isTipping, setIsTipping] = useState(false);
   const postId = String(post.id);
 
+  // Determine initial liked state from the fetched user likes
+  const initialIsLiked = userLikes.has(postId);
+
   // Optimistic Like State
   const likeState = useOptimisticLike(currentUserAddress, postId, {
-    isLiked: false, // fallback truth would come from contract/indexer hasLiked API
+    isLiked: initialIsLiked,
     likeCount: Number(post.like_count ?? 0),
   });
 
@@ -65,6 +70,7 @@ function InteractivePostCard({ post, currentUserAddress, onTipClick }: Interacti
       const client = new LinkoraClient({ contractId, rpcUrl });
       // In production, this XDR would be signed via Freighter and submitted.
       const _txXdr = client.likePost(currentUserAddress, Number(post.id));
+      // Success - the optimistic update remains
     } catch (err) {
       console.error("Failed to like post on chain:", err);
       // Rollback optimistic update
@@ -109,6 +115,10 @@ export default function FeedPage() {
   const [error, setError] = useState<string | null>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
 
+  // User's liked posts set (for seeding initial like state)
+  const [userLikes, setUserLikes] = useState<Set<string>>(new Set());
+  const [likesLoading, setLikesLoading] = useState(false);
+
   // Real-time updates via WebSocket
   const [hasNewPosts, setHasNewPosts] = useState(false);
 
@@ -122,6 +132,41 @@ export default function FeedPage() {
   const [tipAmount, setTipAmount] = useState("");
   const [tipErrors, setTipErrors] = useState<{ token?: string; amount?: string }>({});
   const [tipSubmitting, setTipSubmitting] = useState(false);
+
+  /* ── Fetch Posts Logic ──────────────────────────────────────────────── */
+
+  // Fetch user's liked posts when connected
+  useEffect(() => {
+    if (!currentUserAddress) {
+      setUserLikes(new Set());
+      return;
+    }
+
+    setLikesLoading(true);
+    fetchUserLikes(currentUserAddress)
+      .then((likes) => {
+        setUserLikes(likes);
+        // Seed optimistic store with confirmed liked state
+        likes.forEach((postId) => {
+          const key = `${currentUserAddress}:${postId}`;
+          const existing = OptimisticStore.getLikeState(key);
+          if (!existing) {
+            // Only seed if no optimistic update exists
+            OptimisticStore.setLikeState(key, {
+              isLiked: true,
+              likeCount: 0, // Will be overwritten by post data
+            });
+          }
+        });
+      })
+      .catch((err) => {
+        console.error("Failed to fetch user likes:", err);
+        // Fail gracefully - user will just not see liked state initially
+      })
+      .finally(() => {
+        setLikesLoading(false);
+      });
+  }, [currentUserAddress]);
 
   /* ── Fetch Posts Logic ──────────────────────────────────────────────── */
 
@@ -561,6 +606,7 @@ export default function FeedPage() {
                         post={post}
                         currentUserAddress={currentUserAddress}
                         onTipClick={handleOpenTipModal}
+                        userLikes={userLikes}
                       />
                     ))}
                   </div>
