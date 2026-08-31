@@ -2,17 +2,20 @@
  * Background job for cleaning up expired messages.
  */
 
-import * as cron from 'node-cron';
-import { Database } from './database';
+import * as cron from "node-cron";
+import { Database } from "./database";
+import { logger } from "./logger";
 
 export class CleanupService {
   private database: Database;
   private ttlDays: number;
+  private idempotencyTtlHours: number;
   private task: cron.ScheduledTask | null = null;
 
-  constructor(database: Database, ttlDays: number = 7) {
+  constructor(database: Database, ttlDays: number = 7, idempotencyTtlHours: number = 24) {
     this.database = database;
     this.ttlDays = ttlDays;
+    this.idempotencyTtlHours = idempotencyTtlHours;
   }
 
   /**
@@ -21,19 +24,23 @@ export class CleanupService {
    */
   start(): void {
     if (this.task) {
-      console.warn('Cleanup service is already running');
+      logger.warn("Cleanup service is already running");
       return;
     }
 
     // Run daily at 2:00 AM
-    this.task = cron.schedule('0 2 * * *', async () => {
-      await this.performCleanup();
-    }, {
-      scheduled: true,
-      timezone: 'UTC'
-    });
+    this.task = cron.schedule(
+      "0 2 * * *",
+      async () => {
+        await this.performCleanup();
+      },
+      {
+        scheduled: true,
+        timezone: "UTC",
+      }
+    );
 
-    console.log(`Cleanup service started (TTL: ${this.ttlDays} days)`);
+    logger.info({ ttlDays: this.ttlDays }, "Cleanup service started");
   }
 
   /**
@@ -43,7 +50,7 @@ export class CleanupService {
     if (this.task) {
       this.task.stop();
       this.task = null;
-      console.log('Cleanup service stopped');
+      logger.info("Cleanup service stopped");
     }
   }
 
@@ -52,21 +59,45 @@ export class CleanupService {
    */
   async performCleanup(): Promise<number> {
     try {
-      console.log(`Starting cleanup of messages older than ${this.ttlDays} days...`);
-      
+      logger.info({ ttlDays: this.ttlDays }, "Starting cleanup of messages");
+
       const deletedCount = await this.database.deleteExpiredMessages(this.ttlDays);
-      
+
       if (deletedCount > 0) {
-        console.log(`Cleanup completed: ${deletedCount} expired messages deleted`);
+        logger.info({ deletedCount }, "Cleanup completed: expired messages deleted");
       } else {
-        console.log('Cleanup completed: no expired messages found');
+        logger.info("Cleanup completed: no expired messages found");
       }
-      
+
+      await this.performIdempotencyCleanup();
+
       return deletedCount;
     } catch (error) {
-      console.error('Cleanup failed:', error);
+      logger.error({ error }, "Cleanup failed");
       throw error;
     }
+  }
+
+  /**
+   * Remove idempotency keys older than the configured TTL so retried
+   * requests eventually stop being deduplicated and the table doesn't
+   * grow unbounded.
+   */
+  async performIdempotencyCleanup(): Promise<number> {
+    logger.info(
+      { idempotencyTtlHours: this.idempotencyTtlHours },
+      "Starting cleanup of idempotency keys"
+    );
+
+    const deletedCount = await this.database.deleteExpiredIdempotencyKeys(this.idempotencyTtlHours);
+
+    if (deletedCount > 0) {
+      logger.info({ deletedCount }, "Idempotency cleanup completed: expired keys deleted");
+    } else {
+      logger.info("Idempotency cleanup completed: no expired keys found");
+    }
+
+    return deletedCount;
   }
 
   /**

@@ -45,8 +45,12 @@ export default function SearchBar({
   const { recentSearches, addRecentSearch, clearRecentSearches, removeRecentSearch } =
     useRecentSearches();
 
+  const prevInitialValueRef = useRef(initialValue);
   useEffect(() => {
-    setQuery(initialValue);
+    if (prevInitialValueRef.current !== initialValue) {
+      prevInitialValueRef.current = initialValue;
+      setQuery(initialValue);
+    }
   }, [initialValue]);
 
   // Fetch suggestions when query changes and input is focused
@@ -110,8 +114,10 @@ export default function SearchBar({
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    const trimmed = query.trim();
+    const targetVal = inputRef.current?.value ?? query;
+    const trimmed = targetVal.trim();
     if (!validateSearchQuery(trimmed).valid) return;
+    setQuery(trimmed);
     addRecentSearch(trimmed);
     onSearch(trimmed);
     setIsFocused(false);
@@ -152,7 +158,7 @@ export default function SearchBar({
   };
 
   const showDropdown =
-    isFocused && (query.trim() ? suggestions.length > 0 : recentSearches.length > 0);
+    isFocused && (query.trim() ? suggestions.length > 0 || loading : recentSearches.length > 0);
   const currentSuggestions = query.trim()
     ? suggestions
     : recentSearches.map((s: string) => ({ type: "recent" as const, value: s }));
@@ -164,14 +170,15 @@ export default function SearchBar({
           <input
             ref={inputRef}
             type="text"
-            role="combobox"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setIsFocused(true);
+              setQuery(e.target.value);
+            }}
             onFocus={() => setIsFocused(true)}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             aria-label={placeholder}
-            aria-expanded={showDropdown}
             aria-autocomplete="list"
             aria-controls="search-suggestions"
             aria-activedescendant={
@@ -182,8 +189,7 @@ export default function SearchBar({
           <button
             type="submit"
             className="absolute right-1.5 md:right-2 top-1/2 -translate-y-1/2 rounded bg-violet-600 px-2 md:px-3 py-1 text-xs md:text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-50 transition-colors"
-            disabled={!validateSearchQuery(query).valid}
-            aria-label="Submit search"
+            aria-label={buttonLabel}
           >
             {buttonLabel}
           </button>

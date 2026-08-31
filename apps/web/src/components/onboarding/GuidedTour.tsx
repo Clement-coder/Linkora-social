@@ -57,9 +57,8 @@ export function GuidedTour() {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[100]"
-      role="dialog"
-      aria-modal="true"
+      className="fixed inset-0 z-[100] pointer-events-none"
+      role="region"
       aria-labelledby="guided-tour-title"
       aria-describedby="guided-tour-description"
     >
@@ -95,7 +94,7 @@ export function GuidedTour() {
       )}
 
       <div
-        className="fixed z-[101] w-[min(20rem,calc(100vw-2rem))] rounded-2xl border border-[var(--border)] bg-[var(--muted)] p-4 shadow-2xl"
+        className="pointer-events-auto fixed z-[101] w-[min(20rem,calc(100vw-2rem))] rounded-2xl border border-[var(--border)] bg-[var(--muted)] p-4 shadow-2xl"
         style={
           rect
             ? { top: tooltipPosition.top, left: tooltipPosition.left }

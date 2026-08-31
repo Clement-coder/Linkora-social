@@ -168,6 +168,13 @@ export default function PoolAdminsScreen(): JSX.Element {
       return;
     }
 
+    if (nextThreshold > pool.admins.length) {
+      setMessage(
+        `Threshold can't exceed the admin count (${pool.admins.length}). Add more admins first.`
+      );
+      return;
+    }
+
     queueAction({ kind: "threshold", value, approvals: [] });
   };
 

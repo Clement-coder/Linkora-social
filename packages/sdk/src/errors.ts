@@ -53,18 +53,6 @@ export class CooldownError extends LinkoraError {
 }
 
 /**
- * Thrown when input parameters fail pre-flight validation (invalid username, post content
- * length limits, etc.).
- *
- * @deprecated Use ValidationError instead.
- */
-export class InvalidInputError extends LinkoraError {
-  constructor(message: string, details?: Record<string, unknown>, originalError?: unknown) {
-    super(message, "INVALID_INPUT", details, originalError);
-  }
-}
-
-/**
  * Thrown when a mini-app manifest fails JSON schema validation.
  */
 export class InvalidManifestError extends LinkoraError {
@@ -100,6 +88,17 @@ export class ValidationError extends LinkoraError {
 }
 
 /**
+ * @deprecated Use ValidationError instead. Kept as an alias for backward compatibility.
+ */
+export class InvalidInputError extends ValidationError {
+  constructor(message: string, details?: Record<string, unknown>, originalError?: unknown) {
+    super(message, details, originalError);
+    // Override the hardcoded VALIDATION_ERROR code while preserving the prototype chain
+    (this as unknown as { code: string }).code = "INVALID_INPUT";
+  }
+}
+
+/**
  * Thrown on RPC / network-level failures (connection refused, timeout, non-200
  * HTTP responses from Soroban RPC, Horizon, or the relay).
  */
@@ -120,6 +119,15 @@ export class SigningError extends LinkoraError {
 }
 
 /**
+ * Thrown when an HTTP request exceeds the configured timeout.
+ */
+export class TimeoutError extends LinkoraError {
+  constructor(message: string, details?: Record<string, unknown>, originalError?: unknown) {
+    super(message, "TIMEOUT", details, originalError);
+  }
+}
+
+/**
  * Thrown when an on-chain contract invocation fails (simulation error, contract
  * FAILED status, or a diagnostic trap returned by Soroban).
  */
@@ -129,18 +137,71 @@ export class ContractError extends LinkoraError {
   }
 }
 
-// ── mapError ──────────────────────────────────────────────────────────────────
-
 /**
- * Maps a raw error string or transaction simulation response error to a specific
- * LinkoraError subclass.
- *
- * @param err The caught raw error object or string.
- * @returns A typed LinkoraError instance.
+ * Thrown when the retry circuit breaker opens after too many consecutive
+ * retryable failures. Signals that the transaction queue has been paused and
+ * the RPC endpoint should be treated as unhealthy until it recovers.
  */
-export function mapError(err: unknown): LinkoraError {
-  const msg = err instanceof Error ? err.message : String(err);
+export class CircuitBreakerError extends LinkoraError {
+  constructor(message: string, details?: Record<string, unknown>, originalError?: unknown) {
+    super(message, "CIRCUIT_OPEN", details, originalError);
+  }
+}
 
+// ── Contract error codes ──────────────────────────────────────────────────────
+
+export enum ContractErrorCode {
+  AlreadyInitialized = 1,
+  UsernameTaken = 2,
+  UsernameTooLong = 3,
+  NotAdmin = 4,
+  OnlyAuthor = 5,
+  Blocked = 6,
+  InsufficientAllowance = 7,
+  InsufficientBalance = 8,
+  CooldownActive = 9,
+  NotFound = 10,
+  PostTooLong = 11,
+  InvalidInput = 12,
+  SimulationFailed = 13,
+}
+
+type ErrorConstructor = new (
+  message: string,
+  details?: Record<string, unknown>,
+  originalError?: unknown
+) => LinkoraError;
+
+const errorCodeRegistry: Map<ContractErrorCode, ErrorConstructor> = new Map([
+  [ContractErrorCode.AlreadyInitialized, ContractError],
+  [ContractErrorCode.UsernameTaken, ValidationError],
+  [ContractErrorCode.UsernameTooLong, ValidationError],
+  [ContractErrorCode.NotAdmin, UnauthorizedError],
+  [ContractErrorCode.OnlyAuthor, UnauthorizedError],
+  [ContractErrorCode.Blocked, UnauthorizedError],
+  [ContractErrorCode.InsufficientAllowance, InsufficientBalanceError],
+  [ContractErrorCode.InsufficientBalance, InsufficientBalanceError],
+  [ContractErrorCode.CooldownActive, CooldownError],
+  [ContractErrorCode.NotFound, NotFoundError],
+  [ContractErrorCode.PostTooLong, ValidationError],
+  [ContractErrorCode.InvalidInput, ValidationError],
+  [ContractErrorCode.SimulationFailed, ContractError],
+]);
+
+function tryMapByErrorCode(err: unknown): LinkoraError | null {
+  if (typeof err !== "object" || err === null) return null;
+
+  const code = (err as Record<string, unknown>).code;
+  if (typeof code !== "number") return null;
+
+  const Ctor = errorCodeRegistry.get(code as ContractErrorCode);
+  if (!Ctor) return null;
+
+  const msg = err instanceof Error ? err.message : String(err);
+  return new Ctor(msg, undefined, err);
+}
+
+function mapByRegex(msg: string, err: unknown): LinkoraError {
   if (/allowance|insufficient allowance/i.test(msg)) {
     return new InsufficientBalanceError(
       "Insufficient allowance to complete transaction.",
@@ -165,6 +226,9 @@ export function mapError(err: unknown): LinkoraError {
   if (/blocked/i.test(msg)) {
     return new UnauthorizedError("Operation rejected: user has blocked you.", undefined, err);
   }
+  if (/sign|freighter|ledger|wallet/i.test(msg)) {
+    return new SigningError(msg, undefined, err);
+  }
   if (/not found|does not exist|MissingValue/i.test(msg)) {
     return new NotFoundError("The requested resource was not found.", undefined, err);
   }
@@ -180,9 +244,15 @@ export function mapError(err: unknown): LinkoraError {
   if (/connection|network|timeout|ECONNREFUSED|fetch failed/i.test(msg)) {
     return new NetworkError(msg, undefined, err);
   }
-  if (/sign|freighter|ledger|wallet/i.test(msg)) {
-    return new SigningError(msg, undefined, err);
-  }
 
   return new LinkoraError(msg, "LINKORA_ERROR", undefined, err);
+}
+
+// TODO(#1043): Add instanceof SimulationError check before regex fallback
+export function mapError(err: unknown): LinkoraError {
+  const codeMapped = tryMapByErrorCode(err);
+  if (codeMapped) return codeMapped;
+
+  const msg = err instanceof Error ? err.message : String(err);
+  return mapByRegex(msg, err);
 }

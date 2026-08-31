@@ -76,13 +76,21 @@ export async function deregisterTokenFromIndexer(address: string): Promise<void>
     return;
   }
 
+  // Deregistration is scoped to this device's own token, so signing out on
+  // one device never removes push tokens belonging to the user's other
+  // devices.
+  const token = await getStoredPushTokenAsync();
+  if (!token) {
+    return;
+  }
+
   try {
     await fetch(`${indexerUrl.replace(/\/$/, "")}/api/notifications/deregister`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ address }),
+      body: JSON.stringify({ address, token }),
     });
   } catch (error) {
     console.error("Error deregistering push token with indexer", error);

@@ -22,7 +22,9 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          # Node version is pinned in .node-version (single source of truth
+          # across CI, setup.sh, and package.json engines fields).
+          node-version-file: ".node-version"
           cache: pnpm
 
       - name: Install dependencies
@@ -36,6 +38,9 @@ jobs:
           echo "NEXT_PUBLIC_SOROBAN_RPC_URL=http://localhost:8000/rpc" >> $GITHUB_ENV
           echo "NEXT_PUBLIC_NETWORK_PASSPHRASE=Standalone Network ; February 2017" >> $GITHUB_ENV
           echo "NEXT_PUBLIC_CONTRACT_ID=CBQHLSNMBF4HS3UX2PV72T75V2SXE7M2EZZTQ6YC5DSXIGGY4NPSAFAF" >> $GITHUB_ENV
+
+      - name: Build web application
+        run: pnpm --filter apps-web build
 
       - name: Run E2E tests
         working-directory: apps/web

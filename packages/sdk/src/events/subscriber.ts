@@ -1,5 +1,6 @@
-import { createDefaultCursorStore, CursorStore } from "./cursor";
-import { LinkoraEvent, parseContractEvent, SorobanEvent } from "./types";
+import { createDefaultCursorStore, CursorStore } from "./cursor.js";
+import { LinkoraEvent, parseContractEvent, SorobanEvent } from "./types.js";
+import { fetchWithTimeout } from "../utils/fetch.js";
 
 export type LinkoraEventHandlers = {
   [T in LinkoraEvent["type"]]?: (event: Extract<LinkoraEvent, { type: T }>) => void | Promise<void>;
@@ -16,6 +17,8 @@ export interface LinkoraEventSubscriberConfig {
   maxPollIntervalMs?: number;
   webSocketUrl?: string;
   webSocketFactory?: WebSocketFactory;
+  /** Timeout in ms for HTTP requests (default 30 000). */
+  timeoutMs?: number;
 }
 
 interface GetEventsResult {
@@ -137,6 +140,25 @@ export class LinkoraEventSubscriber {
     await this.loopPromise;
   }
 
+  /**
+   * Destroy the subscriber, stop polling, clean up all resources, and reset state.
+   * After calling destroy(), the subscriber cannot be restarted.
+   *
+   * @returns A promise that resolves when cleanup is complete.
+   *
+   * @example
+   * ```ts
+   * await subscriber.destroy();
+   * console.log("Subscriber destroyed and all resources cleaned up.");
+   * ```
+   */
+  async destroy(): Promise<void> {
+    await this.stop();
+    this.handlers = {};
+    this.cursor = undefined;
+    this.pollIntervalMs = this.config.minPollIntervalMs ?? DEFAULT_MIN_POLL_INTERVAL_MS;
+  }
+
   private async loop(): Promise<void> {
     while (!this.stopRequested) {
       try {
@@ -173,14 +195,11 @@ export class LinkoraEventSubscriber {
       },
     };
 
-    const fetchImpl = (globalThis as { fetch?: typeof fetch }).fetch;
-    if (!fetchImpl) throw new Error("No fetch implementation available");
-
-    const response = await fetchImpl(this.config.rpcUrl, {
+    const response = await fetchWithTimeout(this.config.rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
+    }, this.config.timeoutMs);
 
     if (!response.ok) {
       throw new Error(`RPC request failed: ${response.status} ${response.statusText}`);

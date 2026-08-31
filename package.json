@@ -10,7 +10,8 @@
     "test": "turbo run test",
     "test:integration": "pnpm --filter contracts test:integration",
     "codegen": "pnpm build:contracts && pnpm --filter @linkora/codegen generate",
-    "codegen:check": "pnpm codegen && git diff --exit-code packages/sdk/src/generated/",
+    "codegen:check": "pnpm codegen && git diff --exit-code packages/sdk/src/generated/ packages/sdk/src/events/types.ts",
+    "typecheck": "turbo run typecheck",
     "format": "turbo run format",
     "prepare": "husky"
   },
@@ -39,5 +40,6 @@
       "bash -c 'cd packages/contracts && cargo fmt'"
     ]
   },
-  "packageManager": "pnpm@9.15.9"
+  "packageManager": "pnpm@9.15.9",
+  "license": "MIT"
 }

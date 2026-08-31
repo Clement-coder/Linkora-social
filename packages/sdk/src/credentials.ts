@@ -38,6 +38,10 @@ function hashPair(left: Uint8Array, right: Uint8Array): Uint8Array {
  * Leaves are expected to be sha256(credential_type || credential_value || salt).
  * Sibling pairs are sorted before hashing so the proof does not need direction
  * bits and can be verified by the Soroban contract with only Vec<BytesN<32>>.
+ *
+ * @deprecated This function is not used internally and may be removed in a
+ *   future major release. If you rely on it, please open an issue so we can
+ *   understand the use-case before removal.
  */
 export function generateCredentialMerkleProof(
   leaves: Uint8Array[],

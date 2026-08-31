@@ -1,18 +1,12 @@
 import { Request, Response, NextFunction } from "express";
 import { Keypair } from "@stellar/stellar-sdk";
 import { createHash } from "crypto";
+import { buildAuthMessage, canonicalizeAuthPath } from "@linkora/types/src/auth";
 import { logger } from "../logger";
+import "./rawBody";
 
-// ── Configuration ─────────────────────────────────────────────────────────────
+const SIGNATURE_TIMESTAMP_TOLERANCE_MS = 30_000;
 
-const SIGNATURE_TIMESTAMP_TOLERANCE_MS = 30_000; // 30 seconds
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * Parses "StellarSig <base64(JSON { address, timestamp, signature })>" format.
- * Returns { address, timestamp, signature } or null if invalid.
- */
 function parseStellarSignatureHeader(
   header: string | undefined
 ): { address: string; timestamp: number; signature: string } | null {
@@ -55,23 +49,34 @@ function parseStellarSignatureHeader(
 }
 
 /**
- * Verifies an Ed25519 signature against a message.
- * Returns true if valid, false otherwise.
+ * Hex SHA-256 of the exact bytes the client sent.
+ *
+ * A request with no JSON body never reaches body-parser's `verify` hook, so an
+ * absent `rawBody` hashes as the empty string — the same thing the client does
+ * when it has nothing to send.
  */
-function verifyEd25519Signature(address: string, timestamp: number, signature: string): boolean {
+function hashRequestBody(req: Request): string {
+  return createHash("sha256")
+    .update(req.rawBody ?? Buffer.alloc(0))
+    .digest("hex");
+}
+
+function verifyEd25519Signature(
+  req: Request,
+  address: string,
+  timestamp: number,
+  signature: string
+): boolean {
   try {
-    // Construct the message: address:timestamp
-    const message = `${address}:${timestamp}`;
-
-    // Hash it with SHA256
+    const message = buildAuthMessage({
+      method: req.method,
+      canonicalPath: canonicalizeAuthPath(req.originalUrl),
+      address,
+      timestamp,
+      bodyHash: hashRequestBody(req),
+    });
     const hash = createHash("sha256").update(message).digest();
-
-    // Parse the Stellar address (public key)
     const keypair = Keypair.fromPublicKey(address);
-
-    // Verify the signature using the public key.
-    // The signature is expected to be base64-encoded.
-    // stellar-sdk's verify(data, signature) takes the raw data buffer directly.
     return keypair.verify(hash, Buffer.from(signature, "base64"));
   } catch (error) {
     logger.debug(
@@ -85,27 +90,9 @@ function verifyEd25519Signature(address: string, timestamp: number, signature: s
   }
 }
 
-// ── Middleware ────────────────────────────────────────────────────────────────
-
-/**
- * Middleware to require and verify Stellar Ed25519 signatures.
- * Expects: Authorization: StellarSig <base64(JSON { address, timestamp, signature })>
-
- *
- * On success:
- *   - Sets req.context.stellarAddress
- *   - Calls next()
- *
- * On failure:
- *   - Returns 400 for malformed header
- *   - Returns 403 for expired timestamp (>30s old)
- *   - Returns 401 for invalid signature
- */
-
 export function requireStellarAuth(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
 
-  // Parse the authorization header
   const parsed = parseStellarSignatureHeader(authHeader);
   if (!parsed) {
     logger.warn(
@@ -116,16 +103,18 @@ export function requireStellarAuth(req: Request, res: Response, next: NextFuncti
       "Missing or malformed Stellar authorization header"
     );
     res.status(400).json({
-      error:
-        "Missing or malformed Authorization header. Expected: Authorization: StellarSig <base64(JSON { address, timestamp, signature })>",
-      code: "INVALID_AUTH_HEADER",
+      error: {
+        code: "INVALID_AUTH_HEADER",
+        message:
+          "Missing or malformed Authorization header. Expected: Authorization: StellarSig <base64(JSON { address, timestamp, signature })>",
+        requestId: req.context?.requestId,
+      },
     });
     return;
   }
 
   const { address, timestamp, signature } = parsed;
 
-  // Check if timestamp is within tolerance (prevent replay attacks)
   const now = Date.now();
   const age = now - timestamp;
 
@@ -139,8 +128,11 @@ export function requireStellarAuth(req: Request, res: Response, next: NextFuncti
       "Rejecting request with future timestamp"
     );
     res.status(403).json({
-      error: "Timestamp is in the future",
-      code: "INVALID_TIMESTAMP",
+      error: {
+        code: "INVALID_TIMESTAMP",
+        message: "Timestamp is in the future",
+        requestId: req.context?.requestId,
+      },
     });
     return;
   }
@@ -156,14 +148,16 @@ export function requireStellarAuth(req: Request, res: Response, next: NextFuncti
       "Rejecting request with expired timestamp"
     );
     res.status(403).json({
-      error: `Timestamp is more than ${SIGNATURE_TIMESTAMP_TOLERANCE_MS / 1000}s old. Request rejected for security (replay protection).`,
-      code: "EXPIRED_TIMESTAMP",
+      error: {
+        code: "EXPIRED_TIMESTAMP",
+        message: `Timestamp is more than ${SIGNATURE_TIMESTAMP_TOLERANCE_MS / 1000}s old. Request rejected for security (replay protection).`,
+        requestId: req.context?.requestId,
+      },
     });
     return;
   }
 
-  // Verify the signature
-  if (!verifyEd25519Signature(address, timestamp, signature)) {
+  if (!verifyEd25519Signature(req, address, timestamp, signature)) {
     logger.warn(
       {
         requestId: req.context?.requestId,
@@ -173,13 +167,15 @@ export function requireStellarAuth(req: Request, res: Response, next: NextFuncti
       "Signature verification failed"
     );
     res.status(401).json({
-      error: "Invalid signature",
-      code: "INVALID_SIGNATURE",
+      error: {
+        code: "INVALID_SIGNATURE",
+        message: "Invalid signature",
+        requestId: req.context?.requestId,
+      },
     });
     return;
   }
 
-  // Success: attach the address to context and continue
   if (req.context) {
     req.context.stellarAddress = address;
   }

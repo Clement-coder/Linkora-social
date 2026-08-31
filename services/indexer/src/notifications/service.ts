@@ -18,7 +18,8 @@ export interface DeviceTokenRecord {
 export interface DeviceTokenStore {
   register(address: string, token: string, platform: string): Promise<void>;
   getToken(address: string): Promise<string | null>;
-  removeToken(address: string): Promise<void>;
+  removeToken(address: string, token: string): Promise<void>;
+  removeTokenByPlatform(address: string, platform: string): Promise<void>;
 }
 
 export interface NotificationDispatchOptions {
@@ -58,12 +59,20 @@ export class NotificationService {
     return this.deviceTokenStore.getToken(address);
   }
 
-  async deregisterDeviceToken(address: string): Promise<void> {
+  async deregisterDeviceToken(address: string, token: string): Promise<void> {
+    if (!address || !token) {
+      return;
+    }
+
+    await this.deviceTokenStore.removeToken(address, token);
+  }
+
+  async deregisterWebToken(address: string): Promise<void> {
     if (!address) {
       return;
     }
 
-    await this.deviceTokenStore.removeToken(address);
+    await this.deviceTokenStore.removeTokenByPlatform(address, "web");
   }
 
   async getPreferences(address: string): Promise<any | null> {
@@ -248,24 +257,35 @@ export class MemoryDeviceTokenStore implements DeviceTokenStore {
   constructor(
     private readonly deviceTokens: Map<
       string,
-      { token: string; platform: string; createdAt: string }
+      { token: string; platform: string; createdAt: string }[]
     >
   ) {}
 
   async register(address: string, token: string, platform: string): Promise<void> {
-    this.deviceTokens.set(address, {
+    const existing = this.deviceTokens.get(address) || [];
+    const filtered = existing.filter(t => t.token !== token);
+    filtered.push({
       token,
       platform,
       createdAt: new Date().toISOString(),
     });
+    this.deviceTokens.set(address, filtered);
   }
 
   async getToken(address: string): Promise<string | null> {
-    return this.deviceTokens.get(address)?.token ?? null;
+    const tokens = this.deviceTokens.get(address);
+    if (!tokens || tokens.length === 0) return null;
+    return tokens[tokens.length - 1].token;
   }
 
-  async removeToken(address: string): Promise<void> {
-    this.deviceTokens.delete(address);
+  async removeToken(address: string, token: string): Promise<void> {
+    const tokens = this.deviceTokens.get(address) || [];
+    this.deviceTokens.set(address, tokens.filter(t => t.token !== token));
+  }
+
+  async removeTokenByPlatform(address: string, platform: string): Promise<void> {
+    const tokens = this.deviceTokens.get(address) || [];
+    this.deviceTokens.set(address, tokens.filter(t => t.platform !== platform));
   }
 }
 
@@ -300,13 +320,23 @@ export class PostgresDeviceTokenStore implements DeviceTokenStore {
     return (res.rows[0]?.token as string | undefined) ?? null;
   }
 
-  async removeToken(address: string): Promise<void> {
+  async removeToken(address: string, token: string): Promise<void> {
     await this.pool.query(
       `
       DELETE FROM device_tokens
-      WHERE address = $1
+      WHERE address = $1 AND token = $2
       `,
-      [address]
+      [address, token]
+    );
+  }
+
+  async removeTokenByPlatform(address: string, platform: string): Promise<void> {
+    await this.pool.query(
+      `
+      DELETE FROM device_tokens
+      WHERE address = $1 AND platform = $2
+      `,
+      [address, platform]
     );
   }
 }
