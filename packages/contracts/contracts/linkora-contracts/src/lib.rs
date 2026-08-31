@@ -3117,3 +3117,6 @@ impl LinkoraContract {
 }
 
 mod test;
+
+#[cfg(test)]
+mod tests;

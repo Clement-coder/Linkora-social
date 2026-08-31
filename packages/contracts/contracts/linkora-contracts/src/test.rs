@@ -4675,3 +4675,115 @@ fn test_717_set_profile_username_32_chars_succeeds() {
     let profile = client.get_profile(&user).unwrap();
     assert_eq!(profile.username, username);
 }
+
+// ── Issue #1393: test coverage for get_pool_admins ────────────────────────────
+
+#[test]
+fn test_get_pool_admins_returns_admin_list() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let pool_admin3 = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+
+    let pool_id = symbol_short!("testpool");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![
+            &env,
+            pool_admin1.clone(),
+            pool_admin2.clone(),
+            pool_admin3.clone(),
+        ],
+        &2,
+    );
+
+    let admins = client.get_pool_admins(&pool_id);
+    assert_eq!(admins.len(), 3);
+    assert!(admins.iter().any(|a| a == pool_admin1));
+    assert!(admins.iter().any(|a| a == pool_admin2));
+    assert!(admins.iter().any(|a| a == pool_admin3));
+}
+
+#[test]
+#[should_panic(expected = "pool not found")]
+fn test_get_pool_admins_nonexistent_pool_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let pool_id = symbol_short!("missing");
+    client.get_pool_admins(&pool_id);
+}
+
+#[test]
+fn test_get_pool_admins_after_admin_added() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+
+    let pool_id = symbol_short!("testpool");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &2,
+    );
+
+    client.add_pool_admin(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &new_admin,
+    );
+
+    let admins = client.get_pool_admins(&pool_id);
+    assert_eq!(admins.len(), 3);
+    assert!(admins.iter().any(|a| a == new_admin));
+}
+
+#[test]
+fn test_get_pool_admins_after_admin_removed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let pool_admin3 = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+
+    let pool_id = symbol_short!("testpool");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![
+            &env,
+            pool_admin1.clone(),
+            pool_admin2.clone(),
+            pool_admin3.clone(),
+        ],
+        &2,
+    );
+
+    client.remove_pool_admin(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &pool_admin3,
+    );
+
+    let admins = client.get_pool_admins(&pool_id);
+    assert_eq!(admins.len(), 2);
+    assert!(!admins.iter().any(|a| a == pool_admin3));
+}
