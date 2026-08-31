@@ -10,6 +10,11 @@ const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ID ?? "";
 type ProposalWithQuorum = GovProposal & { effectiveQuorum: number };
 const GOVERNANCE_PARAMETERS = Object.values(GovParameter) as GovParameter[];
 
+// ── Shared Client Instance ───────────────────────────────────────────────────
+// Hoist a single LinkoraClient to module scope so all handlers reuse one client
+// and one underlying rpc.Server connection, avoiding per-action overhead.
+const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
+
 export default function GovernancePage() {
   const { address, connected } = useWalletContext();
   const [proposals, setProposals] = useState<ProposalWithQuorum[]>([]);
@@ -27,7 +32,6 @@ export default function GovernancePage() {
     if (!CONTRACT_ID) return;
     setLoading(true);
     try {
-      const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
       const fetched: ProposalWithQuorum[] = [];
       let id = 1n;
       while (true) {
@@ -58,7 +62,6 @@ export default function GovernancePage() {
     if (!address || !CONTRACT_ID) return;
     setIsSubmitting(true);
     try {
-      const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
       await client.govPropose(address, formParam, BigInt(formValue), null);
       setFormValue("");
       await fetchProposals();
@@ -73,7 +76,6 @@ export default function GovernancePage() {
   const handleVote = async (proposalId: bigint, support: boolean) => {
     if (!address || !CONTRACT_ID) return;
     try {
-      const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
       await client.govVote(address, proposalId, support);
       await fetchProposals();
     } catch (error) {
@@ -85,7 +87,6 @@ export default function GovernancePage() {
   const handleExecute = async (proposalId: bigint) => {
     if (!CONTRACT_ID) return;
     try {
-      const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
       await client.govExecute(proposalId);
       await fetchProposals();
     } catch (error) {
