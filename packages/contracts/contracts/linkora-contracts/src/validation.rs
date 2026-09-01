@@ -186,8 +186,17 @@ pub fn validate_signature(env: &Env, label: &str, signature: &BytesN<64>) {
     let zero = BytesN::from_array(env, &[0u8; 64]);
     require_with_error!(
         env,
-        signature != &zero,
-        format!("{label} must not be an all-zero signature")
+        signature != &zero && signature.to_array().len() == 64,
+        format!("{label} must not be an all-zero or malformed signature")
+    );
+}
+
+pub fn validate_pubkey_32(env: &Env, label: &str, pubkey: &BytesN<32>) {
+    let zero = BytesN::from_array(env, &[0u8; 32]);
+    require_with_error!(
+        env,
+        pubkey != &zero && pubkey.to_array().len() == 32,
+        format!("{label} must not be an all-zero or malformed public key")
     );
 }
 
@@ -197,4 +206,10 @@ pub fn validate_report_verdict(env: &Env, verdict: &ReportStatus) {
         !matches!(verdict, ReportStatus::Pending),
         "verdict must be upheld or dismissed"
     );
+}
+
+/// Rejects a report where the reporter is also the post author, preventing
+/// self-reporting from being used to bury one's own content.
+pub fn validate_reporter_can_report(env: &Env, reporter: &Address, author: &Address) {
+    require_with_error!(env, reporter != author, "cannot report own post");
 }

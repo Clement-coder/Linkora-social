@@ -2,6 +2,7 @@ import { execSync } from "child_process";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { createHash } from "crypto";
 import { xdr } from "@stellar/stellar-sdk";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -129,6 +130,7 @@ function parseSpec(): {
   enums: EnumType[];
   events: EventType[];
   functions: FunctionType[];
+  schemaHash: string;
 } {
   if (!existsSync(WASM)) {
     throw new Error(`WASM not found at ${WASM} — run 'pnpm build:contracts' first.`);
@@ -138,6 +140,8 @@ function parseSpec(): {
     `stellar contract inspect --wasm ${WASM} --output xdr-base64-array 2>/dev/null`,
     { encoding: "utf-8" }
   ).trim();
+
+  const schemaHash = createHash("sha256").update(raw).digest("hex");
 
   const xdrStrings: string[] = JSON.parse(raw);
 
@@ -212,7 +216,7 @@ function parseSpec(): {
     }
   }
 
-  return { structs, enums, events, functions };
+  return { structs, enums, events, functions, schemaHash };
 }
 
 // ── Code generation ───────────────────────────────────────────────────────
@@ -679,7 +683,7 @@ function main() {
   }
 
   console.log("📦 Parsing contract ABI...");
-  const { structs, enums, events, functions } = parseSpec();
+  const { structs, enums, events, functions, schemaHash } = parseSpec();
 
   console.log(`  Structs: ${structs.length}`);
   console.log(`  Enums: ${enums.length}`);
@@ -687,6 +691,9 @@ function main() {
   console.log(`  Functions: ${functions.length}`);
 
   mkdirSync(OUT_DIR, { recursive: true });
+
+  writeFileSync(resolve(OUT_DIR, "schema.hash"), schemaHash + "\n");
+  console.log(`  ✓ packages/sdk/src/generated/schema.hash (${schemaHash.slice(0, 8)})`);
 
   const typesContent = generateTypes(structs, enums);
   writeFileSync(resolve(OUT_DIR, "types.ts"), typesContent);

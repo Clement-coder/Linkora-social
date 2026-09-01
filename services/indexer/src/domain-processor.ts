@@ -50,6 +50,25 @@ const TOPIC_POST_CREATED = "post_created";
 const TOPIC_POST_DELETED = "post_deleted";
 const TOPIC_PROFILE_DELETED = "profile_deleted";
 
+export const DOMAIN_EVENT_TOPICS = {
+  profiles: {
+    creates: [TOPIC_PROFILE_SET],
+    deletes: [TOPIC_PROFILE_DELETED],
+  },
+  posts: {
+    creates: [TOPIC_POST_CREATED],
+    deletes: [],
+  },
+  tips: {
+    creates: [TOPIC_TIP, TOPIC_TIP_RECEIVED],
+    deletes: [],
+  },
+  follows: {
+    creates: [TOPIC_FOLLOW],
+    deletes: [TOPIC_UNFOLLOW],
+  },
+} as const;
+
 function toBusEvent(ev: IngestEvent): import("./bus").BusEvent {
   return {
     type: ev.type,

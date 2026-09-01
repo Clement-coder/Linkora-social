@@ -1,5 +1,6 @@
 import { LinkoraClient } from "../client.js";
 import { VersionMismatchError } from "../errors.js";
+import { nativeToScVal } from "@stellar/stellar-base";
 
 const mockSimulate = jest.fn();
 
@@ -19,7 +20,7 @@ describe("Issue #1362: SDK contract version capability check", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     client = new LinkoraClient({
-      contractId: "CDUMMY",
+      contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
       rpcUrl: "https://rpc.example.com",
     });
   });
@@ -32,7 +33,8 @@ describe("Issue #1362: SDK contract version capability check", () => {
 
   it("returns contract version string when version method succeeds", async () => {
     mockSimulate.mockResolvedValueOnce({
-      result: { retval: { _type: "scval", _val: "1.2.0" } },
+      transactionData: {},
+      result: { retval: nativeToScVal("1.2.0") },
     });
     const version = await client.getContractVersion();
     expect(version).toBe("1.2.0");
@@ -40,7 +42,8 @@ describe("Issue #1362: SDK contract version capability check", () => {
 
   it("verifies contract version successfully when version matches", async () => {
     mockSimulate.mockResolvedValueOnce({
-      result: { retval: { _type: "scval", _val: "1.2.0" } },
+      transactionData: {},
+      result: { retval: nativeToScVal("1.2.0") },
     });
     const ok = await client.verifyContractVersion("1.2.0");
     expect(ok).toBe(true);
@@ -48,7 +51,8 @@ describe("Issue #1362: SDK contract version capability check", () => {
 
   it("throws VersionMismatchError when contract version differs", async () => {
     mockSimulate.mockResolvedValueOnce({
-      result: { retval: { _type: "scval", _val: "0.9.0" } },
+      transactionData: {},
+      result: { retval: nativeToScVal("0.9.0") },
     });
     await expect(client.verifyContractVersion("1.2.0")).rejects.toThrow(VersionMismatchError);
   });

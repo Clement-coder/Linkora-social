@@ -71,18 +71,15 @@ function recordAbuseAttempt(ipAddress: string): void {
   }
 }
 
+import { getClientIP } from "./middleware/rateLimit";
+
 // ── Request logging middleware ────────────────────────────────────────────────
 
 export function requestLoggingMiddleware(req: Request, res: Response, next: NextFunction): void {
   const requestId = uuidv4();
   const startTime = Date.now();
 
-  // Determine IP address (respect X-Forwarded-For behind proxy)
-  let ipAddress = req.ip || "unknown";
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string") {
-    ipAddress = forwarded.split(",")[0].trim();
-  }
+  const ipAddress = getClientIP(req);
 
   req.context = { requestId, startTime, ipAddress };
 

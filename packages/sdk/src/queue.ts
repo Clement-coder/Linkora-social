@@ -12,6 +12,11 @@
  * every step is simulated but never submitted. This is useful for preflight
  * checks and fee estimation without consuming sequence numbers or fees.
  *
+ * In dry-run mode the queue still emits a `confirmed` event at the end of each
+ * step (as a completion marker), but the event carries `dryRun: true` and no
+ * `hash`. Consumers can therefore distinguish a simulated `confirmed` from a
+ * real on-chain confirmation by checking the `dryRun` flag.
+ *
  * ### Per-step timeout
  * `stepTimeoutMs` (config or per-`run()` override) caps the total wall-clock
  * time spent on a single step (signing + submission + confirmation). When the
@@ -32,6 +37,13 @@ export interface TxStatusEvent {
   error?: string;
   /** Resource fee returned by simulation (present when status is "simulated" or later). */
   resourceFee?: string;
+  /**
+   * When `true`, the event reflects a dry-run (simulate-only) execution rather
+   * than a real on-chain submission. A dry-run `confirmed` event carries no
+   * `hash`; consumers can use this flag to distinguish simulated success from an
+   * actual broadcast.
+   */
+  dryRun?: boolean;
 }
 
 export type TxStatusListener = (event: TxStatusEvent) => void;
@@ -105,6 +117,8 @@ export interface TransactionQueueConfig {
   pollIntervalMs?: number;
   /** Maximum number of poll attempts before timing out (default 30). */
   maxPollAttempts?: number;
+  /** Timeout in ms for individual RPC calls (default 10000). */
+  rpcTimeoutMs?: number;
   /**
    * Maximum wall-clock time in milliseconds to spend on a single step
    * (signing + simulation + submission + confirmation). When exceeded the step
@@ -162,6 +176,7 @@ export class TransactionQueue {
   private readonly rpc: RpcClient;
   private readonly pollIntervalMs: number;
   private readonly maxPollAttempts: number;
+  private readonly rpcTimeoutMs: number;
   private readonly defaultStepTimeoutMs: number | undefined;
   private readonly defaultDryRun: boolean;
   private readonly retryConfig: RetryConfig;
@@ -177,6 +192,7 @@ export class TransactionQueue {
     this.rpc = config.rpc;
     this.pollIntervalMs = config.pollIntervalMs ?? 2000;
     this.maxPollAttempts = config.maxPollAttempts ?? 30;
+    this.rpcTimeoutMs = config.rpcTimeoutMs ?? 10000;
     this.defaultStepTimeoutMs = config.stepTimeoutMs;
     this.defaultDryRun = config.dryRun ?? false;
     this.retryConfig = resolveRetryConfig(config.retry);
@@ -248,7 +264,8 @@ export class TransactionQueue {
    *   2. Signs the XDR via the configured signer.
    *   3. Simulates the signed transaction via `rpc.simulateTransaction` (unless
    *      `skipSimulation` is true). Emits `simulated` on success.
-   *   4. In `dryRun` mode, stops here and does not submit.
+   *   4. In `dryRun` mode, stops here and does not submit. Emits a `confirmed`
+   *      event with `dryRun: true` and no hash to mark the step complete.
    *   5. Submits via `rpc.sendTransaction`. Emits `submitted` with the hash.
    *   6. Polls `rpc.getTransaction` until `SUCCESS` or failure. Emits `confirmed`.
    *
@@ -361,8 +378,10 @@ export class TransactionQueue {
 
     // ── 3. Dry-run exit ──────────────────────────────────────────────────────
     if (isDryRun) {
-      // Simulation succeeded; mark as confirmed for tracking purposes (no hash).
-      this.emit({ index: i, xdr: step.xdr, status: "confirmed", resourceFee });
+      // Simulation succeeded; report a dry-run "confirmed" (no hash was
+      // produced) so callers can track the step without mistaking it for a
+      // real on-chain confirmation.
+      this.emit({ index: i, xdr: step.xdr, status: "confirmed", resourceFee, dryRun: true });
       completed.push(i);
       return;
     }
@@ -372,7 +391,13 @@ export class TransactionQueue {
     try {
       const result = await withRetry(
         async () => {
-          const r = await this.rpc.sendTransaction(signedXdr);
+          const r = await this.withTimeout(
+            this.rpc.sendTransaction(signedXdr),
+            this.rpcTimeoutMs,
+            async () => {
+              throw new NetworkError(`sendTransaction timed out after ${this.rpcTimeoutMs}ms`);
+            }
+          );
           if (r.status === "ERROR") {
             throw new NetworkError(r.errorResultXdr ?? "sendTransaction returned ERROR", {
               step: i,
@@ -427,7 +452,13 @@ export class TransactionQueue {
 
   private async pollConfirmation(hash: string): Promise<void> {
     for (let attempt = 0; attempt < this.maxPollAttempts; attempt++) {
-      const tx = await this.rpc.getTransaction(hash);
+      const tx = await this.withTimeout(
+        this.rpc.getTransaction(hash),
+        this.rpcTimeoutMs,
+        async () => {
+          throw new NetworkError(`getTransaction timed out after ${this.rpcTimeoutMs}ms`);
+        }
+      );
       if (tx.status === "SUCCESS") return;
       if (tx.status === "FAILED") {
         throw new NetworkError(tx.errorResultXdr ?? "transaction FAILED", { hash });
@@ -458,17 +489,17 @@ export class TransactionQueue {
    * Race `work` against a deadline. If the deadline fires first, `onTimeout`
    * is called (which should throw) and its rejection propagates.
    */
-  private async withTimeout(
-    work: Promise<void>,
+  private async withTimeout<T>(
+    work: Promise<T>,
     timeoutMs: number,
     onTimeout: () => Promise<never>
-  ): Promise<void> {
+  ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => onTimeout().catch(reject), timeoutMs);
     });
     try {
-      await Promise.race([work, deadline]);
+      return await Promise.race([work, deadline]);
     } finally {
       clearTimeout(timer);
     }

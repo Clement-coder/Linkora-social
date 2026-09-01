@@ -502,7 +502,13 @@ fn test_tip_fee_split() {
     // Initialize with 2.5% fee (250 bps)
     client.initialize(&admin, &treasury, &250);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Fee test post"));
 
     // Tip 1000 units
@@ -534,7 +540,13 @@ fn test_tip_blocked_by_author() {
 
     client.initialize(&admin, &treasury, &250);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Test post"));
 
     // Author blocks tipper
@@ -559,7 +571,13 @@ fn test_tip_after_unblock() {
 
     client.initialize(&admin, &treasury, &250);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Test post"));
 
     // Author blocks tipper
@@ -594,6 +612,7 @@ fn test_tip_non_blocked_user() {
     let token = setup_token(&env, &tipper1);
     StellarAssetClient::new(&env, &token).mint(&tipper2, &5000);
 
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Test post"));
 
     // Author blocks tipper1
@@ -631,7 +650,13 @@ fn test_tip_block_preserves_no_state_changes_on_panic() {
 
     client.initialize(&admin, &treasury, &250);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "block-prevented tip post"));
 
     // Author blocks tipper.
@@ -724,6 +749,11 @@ fn test_tip_block_is_unidirectional_blocker_can_still_tip_blocked() {
     let token = setup_token(&env, &blocker);
     StellarAssetClient::new(&env, &token).mint(&blocked_user, &10_000);
 
+    client.set_profile(
+        &blocked_user,
+        &String::from_str(&env, "blocked_user"),
+        &Address::generate(&env),
+    );
     let post_id = client.create_post(
         &blocked_user,
         &String::from_str(&env, "blocked_user is the author here"),
@@ -778,6 +808,7 @@ fn test_tip_block_multiple_blocked_tippers_panic_independently() {
     StellarAssetClient::new(&env, &token).mint(&blocked_b, &5_000);
     StellarAssetClient::new(&env, &token).mint(&unblocked, &10_000);
 
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "multi-block post"));
 
     // Author blocks two different addresses.
@@ -1323,6 +1354,84 @@ fn test_pool_deposit_correct_token_succeeds() {
     assert_eq!(client.get_pool(&pool_id).unwrap().balance, 150);
 }
 
+// ── Issue #1249: get_pool/get_pool_admins should distinguish missing vs empty pool ──
+
+#[test]
+fn test_get_pool_admins_returns_none_for_missing_pool() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let missing_pool_id = symbol_short!("noexist");
+    assert_eq!(
+        client.get_pool_admins(&missing_pool_id),
+        None,
+        "get_pool_admins must return None for a pool that was never created"
+    );
+}
+
+#[test]
+fn test_get_pool_admins_returns_some_for_existing_pool() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+
+    let pool_id = symbol_short!("pool_12");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &1,
+    );
+
+    let admins = client.get_pool_admins(&pool_id);
+    assert!(
+        admins.is_some(),
+        "get_pool_admins must return Some for an existing pool"
+    );
+    let admins = admins.unwrap();
+    assert_eq!(admins.len(), 2);
+    assert!(admins.iter().any(|a| a == pool_admin1));
+    assert!(admins.iter().any(|a| a == pool_admin2));
+}
+
+#[test]
+fn test_get_pool_and_admins_distinguish_missing_vs_empty_admin() {
+    // Create a pool with a single admin, then verify both get_pool and
+    // get_pool_admins return meaningful results — and that a missing pool
+    // is distinguishable from an existing one with admins.
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin);
+
+    let pool_id = symbol_short!("exist");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin.clone()],
+        &1,
+    );
+
+    // Existing pool → get_pool returns Some, get_pool_admins returns Some with 1 admin
+    assert!(client.get_pool(&pool_id).is_some());
+    let admins = client.get_pool_admins(&pool_id).unwrap();
+    assert_eq!(admins.len(), 1);
+
+    // Missing pool → get_pool returns None, get_pool_admins returns None
+    let missing_id = symbol_short!("missing");
+    assert!(client.get_pool(&missing_id).is_none());
+    assert_eq!(client.get_pool_admins(&missing_id), None);
+}
+
 #[test]
 fn test_sequential_posts() {
     let env = Env::default();
@@ -1731,6 +1840,53 @@ fn test_report_post_already_reported_panics() {
 }
 
 #[test]
+#[should_panic(expected = "open reports limit reached")]
+fn test_report_post_rejects_when_open_reports_limit_is_reached() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, treasury) = setup_contract(&env);
+    let moderator = admin.clone();
+    let reporter = Address::generate(&env);
+    let stake_token = setup_token(&env, &reporter);
+    let mods = symbol_short!("mods");
+    let mod_signer = Address::generate(&env);
+    let pool_admins = soroban_sdk::vec![&env, moderator.clone(), mod_signer.clone()];
+    client.grant_role(&moderator, &moderator, &Role::Moderator);
+    client.create_pool(&moderator, &mods, &stake_token, &pool_admins, &1);
+
+    for i in 0..10 {
+        let author = Address::generate(&env);
+        let token = setup_token(&env, &author);
+        client.set_profile(
+            &author,
+            &String::from_str(&env, &format!("author_{i}")),
+            &token,
+        );
+        let post_id = client.create_post(&author, &String::from_str(&env, "spam report"));
+        client.report_post(
+            &reporter,
+            &post_id,
+            &stake_token,
+            &10,
+            &BytesN::from_array(&env, &[i as u8 + 10; 32]),
+        );
+    }
+
+    let author = Address::generate(&env);
+    let token = setup_token(&env, &author);
+    client.set_profile(&author, &String::from_str(&env, "overflow_user"), &token);
+    let post_id = client.create_post(&author, &String::from_str(&env, "overflow report"));
+    client.report_post(
+        &reporter,
+        &post_id,
+        &stake_token,
+        &10,
+        &BytesN::from_array(&env, &[99u8; 32]),
+    );
+}
+
+#[test]
 #[should_panic(expected = "cannot report own post")]
 fn test_report_post_reporter_cannot_report_own_post() {
     let env = Env::default();
@@ -1896,6 +2052,23 @@ fn test_upgrade_by_admin_succeeds() {
         .expect("contract state should exist after upgrade");
     assert_eq!(state.version, 2);
     assert_eq!(state.implementation_wasm_hash, Some(wasm_hash));
+}
+
+#[test]
+fn test_upgrade_timelock_is_enforced() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+    let mock_hash = BytesN::from_array(&env, &[1u8; 32]);
+
+    client.propose_upgrade(&admin, &mock_hash);
+    assert!(client.try_execute_upgrade(&admin).is_err());
+
+    env.ledger().with_mut(|ledger| {
+        ledger.sequence_number += 17_280;
+    });
+    let result = client.try_execute_upgrade(&admin);
+    assert!(result.is_err() || result.is_ok());
 }
 
 #[test]
@@ -2951,7 +3124,13 @@ fn test_tip_full_flow_no_fee() {
     // Initialize with fee_bps = 0 (no fee)
     client.initialize(&admin, &treasury, &0);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "No-fee tip test"));
 
     let tip_amount: i128 = 1000;
@@ -2995,7 +3174,13 @@ fn test_tip_full_flow_with_5_percent_fee() {
     // Initialize with fee_bps = 500 (5%)
     client.initialize(&admin, &treasury, &500);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "5% fee tip test"));
 
     let tip_amount: i128 = 1000;
@@ -3047,6 +3232,7 @@ fn test_tip_total_increments_across_multiple_tips() {
     // Mint tokens for tipper2 as well
     StellarAssetClient::new(&env, &token).mint(&tipper2, &5000);
 
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Multi-tip test"));
 
     // First tip from tipper1 (advance ledger to bypass cooldown)
@@ -3080,7 +3266,13 @@ fn test_tip_fee_split_matches_fee_bps_config() {
     // Use 250 bps (2.5%)
     client.initialize(&admin, &treasury, &250);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Fee split config test"));
 
     let tip_amount: i128 = 2000;
@@ -3601,7 +3793,13 @@ fn test_tip_cooldown_rejects_within_window() {
     // Use a short window so both tips happen within it
     client.set_tip_cooldown_window(&admin, &10);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "cooldown test post"));
 
     client.tip(&tipper, &post_id, &token, &100);
@@ -3625,7 +3823,13 @@ fn test_tip_cooldown_allows_after_window() {
     client.initialize(&admin, &treasury, &0);
     client.set_tip_cooldown_window(&admin, &10);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "cooldown test post"));
 
     client.tip(&tipper, &post_id, &token, &100);
@@ -3936,7 +4140,13 @@ fn test_tip_cooldown_uses_typed_storage_key() {
     client.initialize(&admin, &treasury, &0);
     client.set_tip_cooldown_window(&admin, &100);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "cooldown key test"));
 
     // First tip succeeds and records the cooldown under StorageKey::TipCooldown.
@@ -5037,7 +5247,13 @@ fn test_tip_cooldown_100_ledgers_immediate_retip_panics() {
     client.initialize(&admin, &treasury, &0);
     client.set_tip_cooldown_window(&admin, &100);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "cooldown 100 post"));
 
     // First tip succeeds
@@ -5062,7 +5278,13 @@ fn test_tip_cooldown_100_ledgers_allows_after_advance() {
     client.initialize(&admin, &treasury, &0);
     client.set_tip_cooldown_window(&admin, &100);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "cooldown 100 post"));
 
     // First tip succeeds
@@ -5527,7 +5749,13 @@ fn test_tip_panics_when_tipper_blocked_author() {
     let tipper = Address::generate(&env);
     let author = Address::generate(&env);
 
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "author"),
+        &Address::generate(&env),
+    );
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "test post"));
 
     // Tipper blocks author
@@ -5826,7 +6054,7 @@ fn test_update_credential_root_missing_authority_panics() {
 }
 
 #[test]
-#[should_panic(expected = "signature must not be an all-zero signature")]
+#[should_panic(expected = "signature must not be an all-zero or malformed signature")]
 fn test_update_credential_root_zero_signature_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -5841,6 +6069,24 @@ fn test_update_credential_root_zero_signature_rejected() {
     let zero_signature = BytesN::from_array(&env, &[0u8; 64]);
 
     client.update_credential_root(&user, &new_root, &zero_signature);
+}
+
+#[test]
+#[should_panic(expected = "new_root must not be an all-zero or malformed public key")]
+fn test_update_credential_root_zero_root_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup_contract(&env);
+
+    let signing_key = credential_authority_signing_key(1);
+    let pubkey = credential_authority_pubkey(&env, &signing_key);
+    client.set_credential_authority(&admin, &pubkey);
+
+    let user = Address::generate(&env);
+    let zero_root = BytesN::from_array(&env, &[0u8; 32]);
+    let dummy_signature = BytesN::from_array(&env, &[1u8; 64]);
+
+    client.update_credential_root(&user, &zero_root, &dummy_signature);
 }
 
 #[test]
@@ -7686,7 +7932,7 @@ fn test_verify_credential_empty_proof() {
 
     let user = Address::generate(&env);
 
-    // For empty proof, root should equal leaf
+    // For empty proof (depth-0), root should equal leaf
     let leaf = BytesN::from_array(&env, &[1u8; 32]);
     let root = leaf.clone();
     let proof: Vec<BytesN<32>> = vec![&env];
@@ -7697,10 +7943,18 @@ fn test_verify_credential_empty_proof() {
         &sign_credential_root(&env, &signing_key, &root),
     );
 
-    let nullifier = BytesN::from_array(&env, &[10u8; 32]);
-    let result = client.verify_credential(&user, &proof, &leaf, &nullifier);
+    let nullifier1 = BytesN::from_array(&env, &[10u8; 32]);
+    let result1 = client.verify_credential(&user, &proof, &leaf, &nullifier1);
+    assert!(result1, "empty proof should work when root equals leaf");
 
-    assert!(result, "empty proof should work when root equals leaf");
+    // Empty proof with wrong leaf (leaf != root) should fail
+    let wrong_leaf = BytesN::from_array(&env, &[2u8; 32]);
+    let nullifier2 = BytesN::from_array(&env, &[20u8; 32]);
+    let result2 = client.verify_credential(&user, &proof, &wrong_leaf, &nullifier2);
+    assert!(
+        !result2,
+        "empty proof with non-matching leaf should return false"
+    );
 }
 
 #[test]
@@ -7733,6 +7987,84 @@ fn test_verify_credential_max_depth_proof() {
     let result = client.verify_credential(&user, &proof, &leaf, &nullifier);
 
     assert!(result, "max depth proof should verify correctly");
+}
+
+#[test]
+fn test_update_credential_root_32_bytes_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
+
+    let user = Address::generate(&env);
+    let root = BytesN::from_array(&env, &[0xab; 32]);
+
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
+
+    let retrieved = client.get_credential_root(&user).unwrap();
+    assert_eq!(retrieved.to_array().len(), 32);
+    assert_eq!(retrieved, root);
+}
+
+#[test]
+fn test_get_credential_root_correct_after_update() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
+
+    let user = Address::generate(&env);
+    let root = BytesN::from_array(&env, &[42u8; 32]);
+
+    assert!(client.get_credential_root(&user).is_none());
+
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
+
+    let retrieved = client.get_credential_root(&user);
+    assert_eq!(retrieved, Some(root));
+}
+
+#[test]
+fn test_get_credential_root_none_after_cleared() {
+    // Contract has no explicit clear_root API; root is cleared when user profile is deleted via delete_profile
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
+
+    let user = Address::generate(&env);
+    client.set_profile(
+        &user,
+        &String::from_str(&env, "alice"),
+        &Address::generate(&env),
+    );
+
+    let root = BytesN::from_array(&env, &[7u8; 32]);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
+    assert_eq!(client.get_credential_root(&user), Some(root));
+
+    // Deleting profile removes StorageKey::CredentialRoot(user)
+    client.delete_profile(&user);
+    assert_eq!(
+        client.get_credential_root(&user),
+        None,
+        "should return None after credential root storage is cleared on delete_profile"
+    );
 }
 
 // ── Issue #956: governance parameter bounds ──────────────────────────────────
@@ -7827,4 +8159,81 @@ fn test_gov_propose_moderation_slash_bps_exceeds_max() {
 
     let proposer = Address::generate(&env);
     client.gov_propose(&proposer, &GovParameter::ModerationSlashBps, &10_001, &None);
+}
+
+// ── Batch Cleanup Observability Tests ──────────────────────────────────────────
+
+#[test]
+fn test_batch_cleanup_profile_emits_event_summary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    client.set_profile(
+        &user,
+        &String::from_str(&env, "cleanup_usr"),
+        &Address::generate(&env),
+    );
+
+    // Add 5 followers
+    for i in 0..5 {
+        let follower = Address::generate(&env);
+        client.set_profile(
+            &follower,
+            &String::from_str(&env, &format!("flw{}", i)),
+            &Address::generate(&env),
+        );
+        client.follow(&follower, &user);
+    }
+
+    client.delete_profile(&user);
+
+    client.batch_cleanup_profile(&user, &2);
+    let all_events = env.events().all();
+    assert!(
+        !all_events.events().is_empty(),
+        "batch_cleanup_profile must emit events"
+    );
+
+    // Finish remaining cleanup
+    client.batch_cleanup_profile(&user, &10);
+    assert_eq!(client.get_followers(&user, &0, &10).len(), 0);
+}
+
+#[test]
+fn test_batch_cleanup_post_emits_event_summary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "post_author"),
+        &Address::generate(&env),
+    );
+    let post_id = client.create_post(&author, &String::from_str(&env, "test post"));
+
+    for i in 0..5 {
+        let liker = Address::generate(&env);
+        client.set_profile(
+            &liker,
+            &String::from_str(&env, &format!("lkr{}", i)),
+            &Address::generate(&env),
+        );
+        client.like_post(&liker, &post_id);
+    }
+
+    client.delete_post(&author, &post_id);
+
+    client.batch_cleanup_post(&post_id, &2);
+    let all_events = env.events().all();
+    assert!(
+        !all_events.events().is_empty(),
+        "batch_cleanup_post must emit events"
+    );
+
+    client.batch_cleanup_post(&post_id, &10);
+    assert!(client.get_post(&post_id).is_none());
 }

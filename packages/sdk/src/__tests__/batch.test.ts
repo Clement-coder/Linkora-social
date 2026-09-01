@@ -20,7 +20,7 @@ describe("Issue #1360: SDK request batching and single rpc.Server reuse", () => 
 
   it("reuses a single rpc.Server instance across calls", () => {
     const client = new LinkoraClient({
-      contractId: "CDUMMY",
+      contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
       rpcUrl: "https://rpc.example.com",
     });
 
@@ -33,7 +33,7 @@ describe("Issue #1360: SDK request batching and single rpc.Server reuse", () => 
 
   it("executes batchSimulate in a single multi-op simulation RPC roundtrip", async () => {
     const client = new LinkoraClient({
-      contractId: "CDUMMY",
+      contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
       rpcUrl: "https://rpc.example.com",
     });
 

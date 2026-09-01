@@ -1,9 +1,15 @@
 import {
+  addOutboxDmMessage,
   confirmPendingPost,
+  DmMessage,
   getCachedPostById,
+  getDmSyncCursor,
   getPendingPosts,
+  markDmMessageFailed,
   markPendingPostFailed,
+  mergeDmDeltas,
   reconcilePosts,
+  setDmSyncCursor,
 } from "./db";
 import { Post } from "../components/PostCard";
 
@@ -79,5 +85,127 @@ export async function syncPendingPosts(): Promise<void> {
       // Mark as failed so the UI can display a retry option
       await markPendingPostFailed(String(post.id));
     }
+  }
+}
+
+/**
+ * A minimal source of DM messages, satisfied today by the in-memory mock
+ * DmService (`utils/mockDm.ts`) and, once the mobile wallet can produce the
+ * raw-message signatures the relay's address-ownership auth requires, by a
+ * real dm-relay HTTP client.
+ */
+export interface DmClient {
+  getMessages(otherAddress: string): Promise<DmSourceMessage[]>;
+  sendMessage(toAddress: string, content: string): Promise<void>;
+}
+
+export interface DmSourceMessage {
+  id: string;
+  sender: string;
+  recipient: string;
+  content: string;
+  ciphertext_b64?: string;
+  timestamp: number;
+}
+
+export interface DmReconcileResult {
+  mergedCount: number;
+  latestSyncedTimestamp: number | null;
+}
+
+/**
+ * Deterministic, dependency-free content hash (FNV-1a) used to recognize
+ * "the same logical message" across devices before the relay has assigned it
+ * an id — e.g. an outbox entry composed offline and its later relay-confirmed
+ * counterpart. Not a security primitive; only used as a local merge key.
+ */
+export function computeCiphertextHash(material: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < material.length; i++) {
+    hash ^= material.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function ciphertextHashOf(msg: DmSourceMessage): string {
+  const material =
+    msg.ciphertext_b64 && msg.ciphertext_b64.length > 0 ? msg.ciphertext_b64 : msg.content;
+  return computeCiphertextHash(material);
+}
+
+/**
+ * Fetches this conversation's messages from the relay/mock and merges any
+ * message newer than the locally stored sync cursor into the local thread,
+ * then advances the cursor.
+ *
+ * The underlying transport (both the current mock and the real dm-relay API)
+ * only supports fetching the full/latest message set, not a server-side
+ * "since" filter, so the delta is computed here by comparing timestamps
+ * against the stored cursor. Merging is still idempotent and duplicate-free
+ * regardless of how much the source returns, because `mergeDmDeltas` upserts
+ * by message id.
+ */
+export async function reconcileDmThread(
+  client: DmClient,
+  conversationId: string,
+  otherAddress: string
+): Promise<DmReconcileResult> {
+  const cursor = await getDmSyncCursor(conversationId);
+  const all = await client.getMessages(otherAddress);
+  const deltas = all.filter((msg) => msg.timestamp > cursor);
+
+  if (deltas.length === 0) {
+    return { mergedCount: 0, latestSyncedTimestamp: null };
+  }
+
+  const result = await mergeDmDeltas(
+    conversationId,
+    deltas.map((msg) => ({
+      id: msg.id,
+      sender: msg.sender,
+      recipient: msg.recipient,
+      content: msg.content,
+      ciphertextHash: ciphertextHashOf(msg),
+      timestamp: msg.timestamp,
+    }))
+  );
+
+  if (result.newestTimestamp !== null) {
+    await setDmSyncCursor(conversationId, result.newestTimestamp);
+  }
+
+  return { mergedCount: result.mergedCount, latestSyncedTimestamp: result.newestTimestamp };
+}
+
+/**
+ * Sends a DM through the outbox: the message is persisted locally as
+ * 'pending' before the network call so it renders immediately (including
+ * while offline), then marked 'failed' with the relay's error if the send is
+ * rejected. On success the row stays 'pending' until the next reconciliation
+ * pass dedupes it against the relay-confirmed copy (ciphertext-hash match).
+ */
+export async function sendDmMessageWithOutbox(
+  client: DmClient,
+  conversationId: string,
+  sender: string,
+  recipient: string,
+  content: string
+): Promise<DmMessage> {
+  const outboxMessage = await addOutboxDmMessage(
+    conversationId,
+    sender,
+    recipient,
+    content,
+    computeCiphertextHash(content)
+  );
+
+  try {
+    await client.sendMessage(recipient, content);
+    return outboxMessage;
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    await markDmMessageFailed(outboxMessage.id, errorMessage);
+    return { ...outboxMessage, syncStatus: "failed", errorMessage };
   }
 }

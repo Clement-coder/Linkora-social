@@ -26,7 +26,53 @@ import {
 } from "crypto";
 import express, { Request, Response } from "express";
 import { requestLoggingMiddleware } from "../../logger";
-import { rateLimitRead, rateLimitWrite, resetRateLimiter, RateLimiter } from "../rateLimit";
+import {
+  rateLimitRead,
+  rateLimitWrite,
+  resetRateLimiter,
+  RateLimiter,
+  getClientIP,
+  isIpInCidr,
+  normalizeIp,
+} from "../rateLimit";
+
+describe("getClientIP & Trusted Proxy validation", () => {
+  it("normalizes IPv4 and IPv6-mapped IPv4 addresses", () => {
+    expect(normalizeIp("1.2.3.4")).toBe("1.2.3.4");
+    expect(normalizeIp("::ffff:1.2.3.4")).toBe("1.2.3.4");
+  });
+
+  it("validates CIDR matches correctly", () => {
+    expect(isIpInCidr("10.0.0.5", "10.0.0.0/8")).toBe(true);
+    expect(isIpInCidr("172.16.1.1", "172.16.0.0/12")).toBe(true);
+    expect(isIpInCidr("192.168.1.100", "192.168.0.0/16")).toBe(true);
+    expect(isIpInCidr("203.0.113.1", "10.0.0.0/8")).toBe(false);
+  });
+
+  it("ignores spoofed X-Forwarded-For from untrusted direct connection", () => {
+    const req = {
+      headers: { "x-forwarded-for": "1.2.3.4" },
+      socket: { remoteAddress: "203.0.113.50" },
+    };
+    expect(getClientIP(req, ["10.0.0.0/8", "127.0.0.1"])).toBe("203.0.113.50");
+  });
+
+  it("trusts X-Forwarded-For header when connection comes from trusted proxy", () => {
+    const req = {
+      headers: { "x-forwarded-for": "198.51.100.25" },
+      socket: { remoteAddress: "10.0.0.1" },
+    };
+    expect(getClientIP(req, ["10.0.0.0/8"])).toBe("198.51.100.25");
+  });
+
+  it("extracts true client IP from multi-hop X-Forwarded-For header", () => {
+    const req = {
+      headers: { "x-forwarded-for": "198.51.100.25, 10.0.0.2" },
+      socket: { remoteAddress: "10.0.0.1" },
+    };
+    expect(getClientIP(req, ["10.0.0.0/8"])).toBe("198.51.100.25");
+  });
+});
 import { requireStellarAuth } from "../stellarAuth";
 import { jsonWithRawBody } from "../rawBody";
 import { buildAuthMessage, canonicalizeAuthPath } from "@linkora/types/src/auth";
@@ -238,7 +284,7 @@ describe("rateLimitRead middleware (100 req/min per IP)", () => {
     // With one trusted proxy hop, the client-supplied portion of the header
     // is everything except the rightmost entry (the address our own proxy
     // observed). Rotating the spoofed prefix must not grant a fresh budget.
-    const realClientIp = "10.0.0.9";
+    const realClientIp = "203.0.113.195";
     for (let i = 0; i < 100; i++) {
       const res = await request(app)
         .get("/test")
@@ -248,19 +294,19 @@ describe("rateLimitRead middleware (100 req/min per IP)", () => {
 
     const spoofed = await request(app)
       .get("/test")
-      .set("x-forwarded-for", `203.0.113.${Math.floor(Math.random() * 254) + 1}, ${realClientIp}`);
+      .set("x-forwarded-for", `198.51.100.${Math.floor(Math.random() * 254) + 1}, ${realClientIp}`);
     expect(spoofed.status).toBe(429);
   }, 30_000);
 
   it("still isolates genuinely different clients behind the trusted proxy", async () => {
     for (let i = 0; i < 100; i++) {
-      await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 10.0.0.10");
+      await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 203.0.113.10");
     }
     expect(
-      (await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 10.0.0.10")).status
+      (await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 203.0.113.10")).status
     ).toBe(429);
     expect(
-      (await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 10.0.0.11")).status
+      (await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 203.0.113.11")).status
     ).toBe(200);
   }, 30_000);
 });

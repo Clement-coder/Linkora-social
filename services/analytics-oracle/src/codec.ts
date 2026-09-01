@@ -1,5 +1,6 @@
 import { encode } from "cbor-x";
 import { sha256 } from "@noble/hashes/sha256";
+import { xdr } from "@stellar/stellar-sdk";
 import { AnalyticsReport } from "./types.js";
 
 export class ValidationError extends Error {
@@ -132,4 +133,79 @@ export function encodeReport(report: AnalyticsReport): Buffer {
  */
 export function hashReport(reportCbor: Buffer): Buffer {
   return Buffer.from(sha256(reportCbor));
+}
+
+// ── Ledger footprint helpers ─────────────────────────────────────────────────
+// The rpc.Server is reused across submissions, so it is the caller's job to
+// refresh the Soroban LedgerFootprint on every attestation. These helpers make
+// a freshly simulated footprint comparable to the previous submission's, so a
+// growing footprint can be detected and surfaced instead of silently shipping
+// a stale XDR footprint.
+
+export interface FootprintSummary {
+  /** Number of read-only ledger keys in the footprint. */
+  readOnlyCount: number;
+  /** Number of read-write ledger keys in the footprint. */
+  readWriteCount: number;
+  /** Total ledger keys in the footprint. */
+  totalKeys: number;
+  /**
+   * Stable digest derived from the canonical XDR of every ledger key.
+   * Changes whenever the footprint reshapes (adds, removes, or alters the
+   * entries it touches), independent of key ordering.
+   */
+  digest: string;
+}
+
+/**
+ * Produce a stable, comparable summary of a Soroban ledger footprint.
+ *
+ * Every ledger key is serialised to its canonical base64 XDR and hashed, so
+ * two footprints that reference different contract state always produce
+ * different digests — even if they happen to reference the same number of keys.
+ */
+export function summarizeFootprint(footprint: xdr.LedgerFootprint): FootprintSummary {
+  const readOnly = footprint.readOnly();
+  const readWrite = footprint.readWrite();
+
+  const parts: string[] = [];
+  for (const key of readOnly) parts.push(key.toXDR("base64"));
+  for (const key of readWrite) parts.push(key.toXDR("base64"));
+
+  return {
+    readOnlyCount: readOnly.length,
+    readWriteCount: readWrite.length,
+    totalKeys: readOnly.length + readWrite.length,
+    digest: hashReport(Buffer.from(parts.join("\n"), "utf8")).toString("hex"),
+  };
+}
+
+export interface FootprintGrowthCheck {
+  /** Whether the footprint differs from the previous submission's. */
+  changed: boolean;
+  /** Whether the fresh footprint touches more ledger keys than the previous one. */
+  grew: boolean;
+  /** Net change in total ledger keys (positive = growth, negative = shrink). */
+  addedKeys: number;
+}
+
+/**
+ * Compare a freshly simulated footprint with the previous submission's
+ * footprint. `grew` is true only when the new footprint is both different and
+ * touches strictly more ledger keys than the previous one — the condition that
+ * risks a stale-footprint simulation/submission mismatch.
+ */
+export function assessFootprintGrowth(
+  prev: FootprintSummary | null,
+  next: FootprintSummary
+): FootprintGrowthCheck {
+  if (prev === null) {
+    return { changed: true, grew: false, addedKeys: 0 };
+  }
+  const changed = prev.digest !== next.digest;
+  return {
+    changed,
+    grew: changed && next.totalKeys > prev.totalKeys,
+    addedKeys: changed ? next.totalKeys - prev.totalKeys : 0,
+  };
 }

@@ -12,8 +12,9 @@ mod validation;
 pub use errors::{ContractError, RentError};
 use validation::{
     validate_address_list, validate_amount, validate_gov_parameter, validate_non_default_address,
-    validate_protocol_fee, validate_report_verdict, validate_signature, validate_u32_range,
-    validate_username, MAX_BIO_LEN, MAX_CONTENT_LEN, MAX_FEE_BPS, MAX_QUORUM,
+    validate_protocol_fee, validate_pubkey_32, validate_report_verdict,
+    validate_reporter_can_report, validate_signature, validate_u32_range, validate_username,
+    MAX_BIO_LEN, MAX_CONTENT_LEN, MAX_FEE_BPS, MAX_QUORUM,
 };
 
 // ── Storage Key Enum ──────────────────────────────────────────────────────────
@@ -55,6 +56,7 @@ pub enum StorageKey {
     AttestationNullifier(BytesN<32>), // persistent: sha256(report_cbor) -> bool (replay guard)
     Report(u64, Address), // persistent: (post_id, reporter) -> Report
     ReportCount(u64),  // persistent: post_id -> u32 count of reports
+    OpenReports(Address), // persistent: reporter -> u32 count of unresolved reports
 
     // ── Lazy Cleanup (Tombstones & Indexes) ───────────────────────────────
     DeletedPost(u64),              // persistent: post_id -> bool
@@ -64,6 +66,7 @@ pub enum StorageKey {
     PostReportersIdx(u64, u32),    // persistent: (post_id, seq) -> Address (Count is ReportCount)
     PostTipCooldownsCount(u64),    // persistent: post_id -> u32
     PostTipCooldownsIdx(u64, u32), // persistent: (post_id, seq) -> Address
+    UpgradeProposal,               // instance: staged WASM upgrade proposal
 }
 
 // ── Instance-storage key constants (small scalars, not contracttype) ──────────
@@ -83,6 +86,9 @@ const ROLES: Symbol = symbol_short!("ROLES");
 const PAUSED: Symbol = symbol_short!("PAUSED");
 const MAX_POST_LEN_KEY: Symbol = symbol_short!("MAX_POST");
 const MAX_BIO_LEN_KEY: Symbol = symbol_short!("MAX_BIO");
+
+// ── Upgrade Timelock ──────────────────────────────────────────────────────────
+const UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280; // approximately one day at 5s/ledger
 
 // ── TTL Constants ─────────────────────────────────────────────────────────────
 //
@@ -107,6 +113,8 @@ const POOL_DEPOSIT_COOLDOWN_LEDGERS: u32 = 720;
 // ── Pagination Limit ──────────────────────────────────────────────────────────
 
 const MAX_PAGE_LIMIT: u32 = 50;
+const MAX_OPEN_REPORTS_PER_REPORTER: u32 = 10;
+const MAX_TIP_TOTAL: i128 = 1_000_000_000_000_000_000; // 10^18 — bound tip_total to limit storage-rent cost
 
 // ── Data Types ────────────────────────────────────────────────────────────────
 
@@ -145,6 +153,14 @@ pub struct ContractState {
     pub version: u32,
     /// Last known implementation hash. Updated on each successful upgrade.
     pub implementation_wasm_hash: Option<BytesN<32>>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct UpgradeProposal {
+    pub new_wasm_hash: BytesN<32>,
+    pub proposed_ledger: u32,
+    pub executable_ledger: u32,
 }
 
 // ── Governance Types ─────────────────────────────────────────────────────────
@@ -556,20 +572,24 @@ pub struct ReportDismissedEvent {
 
 // ── Issue #946: missing events for batch ops and admin functions ──────────────
 
+/// Emitted during `batch_cleanup_profile` to report progress and remaining entry count to indexers.
 #[contractevent]
 #[derive(Clone)]
 pub struct BatchCleanupProfileEvent {
     #[topic]
     pub user: Address,
     pub cleaned_entries: u32,
+    pub remaining_entries: u32,
 }
 
+/// Emitted during `batch_cleanup_post` to report progress and remaining entry count to indexers.
 #[contractevent]
 #[derive(Clone)]
 pub struct BatchCleanupPostEvent {
     #[topic]
     pub post_id: u64,
     pub cleaned_entries: u32,
+    pub remaining_entries: u32,
 }
 
 #[contractevent]
@@ -1085,6 +1105,8 @@ impl LinkoraContract {
             Self::bump(&env, &author_key);
         }
 
+        let remaining_entries: u32 = f_count + following_count + author_posts.len();
+
         if f_count == 0 && following_count == 0 && author_posts.is_empty() {
             env.storage().persistent().remove(&tombstone_key);
         }
@@ -1092,6 +1114,7 @@ impl LinkoraContract {
         BatchCleanupProfileEvent {
             user,
             cleaned_entries: entries_removed,
+            remaining_entries,
         }
         .publish(&env);
     }
@@ -1122,6 +1145,7 @@ impl LinkoraContract {
         Self::bump_instance(&env);
         admin.require_auth();
         validate_non_default_address(&env, "admin", &admin);
+        validate_pubkey_32(&env, "authority_pubkey", &pubkey);
         Self::require_role(&env, &admin, Role::Admin);
         let key = StorageKey::CredentialAuthority;
         env.storage().persistent().set(&key, &pubkey);
@@ -1148,6 +1172,7 @@ impl LinkoraContract {
         Self::bump_instance(&env);
         user.require_auth();
         validate_non_default_address(&env, "user", &user);
+        validate_pubkey_32(&env, "new_root", &new_root);
         validate_signature(&env, "signature", &signature);
 
         let authority_key = StorageKey::CredentialAuthority;
@@ -1156,6 +1181,7 @@ impl LinkoraContract {
             .persistent()
             .get(&authority_key)
             .expect("credential authority not set");
+        validate_pubkey_32(&env, "authority_pubkey", &authority_pubkey);
         Self::bump(&env, &authority_key);
 
         // Verify Ed25519 signature: ed25519_verify(pubkey, message, signature).
@@ -2038,6 +2064,8 @@ impl LinkoraContract {
             Self::bump(&env, &tc_count_key);
         }
 
+        let remaining_entries: u32 = likes_count + reports_count + tc_count;
+
         // Finalize Tombstone Removal
         if likes_count == 0 && reports_count == 0 && tc_count == 0 {
             env.storage().persistent().remove(&tombstone_key);
@@ -2046,6 +2074,7 @@ impl LinkoraContract {
         BatchCleanupPostEvent {
             post_id,
             cleaned_entries: entries_removed,
+            remaining_entries,
         }
         .publish(&env);
     }
@@ -2299,6 +2328,11 @@ impl LinkoraContract {
         let fee_amount =
             (amount / 10_000) * fee_bps as i128 + (amount % 10_000) * fee_bps as i128 / 10_000;
         let author_amount = amount - fee_amount;
+        require_with_error!(
+            &env,
+            post.tip_total.checked_add(author_amount).unwrap_or(0) <= MAX_TIP_TOTAL,
+            "tip_total cap exceeded"
+        );
         post.tip_total += author_amount;
         env.storage().persistent().set(&key, &post);
         Self::bump(&env, &key);
@@ -2420,7 +2454,7 @@ impl LinkoraContract {
         let balance_before = token_client.balance(&env.current_contract_address());
 
         // Transfer tokens
-        token_client.transfer(&depositor, &env.current_contract_address(), &amount);
+        token_client.transfer(&depositor, env.current_contract_address(), &amount);
 
         // Verify balance increased by exactly the amount claimed
         let balance_after = token_client.balance(&env.current_contract_address());
@@ -2525,17 +2559,18 @@ impl LinkoraContract {
     /// # Arguments
     /// * `pool_id` - Pool identifier
     ///
-    /// # Errors
-    /// * Panics if pool does not exist
-    pub fn get_pool_admins(env: Env, pool_id: Symbol) -> Vec<Address> {
+    /// # Returns
+    /// * `Some(Vec<Address>)` if the pool exists
+    /// * `None` if the pool does not exist
+    pub fn get_pool_admins(env: Env, pool_id: Symbol) -> Option<Vec<Address>> {
         let key = StorageKey::Pool(pool_id);
-        let pool: Pool = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("pool not found");
-        Self::bump(&env, &key);
-        pool.admins
+        let result: Option<Pool> = env.storage().persistent().get(&key);
+        if let Some(pool) = result {
+            Self::bump(&env, &key);
+            Some(pool.admins)
+        } else {
+            None
+        }
     }
 
     /// Adds an admin to a pool. Requires M-of-N admin signatures.
@@ -3418,19 +3453,72 @@ impl LinkoraContract {
 
     // ── Upgradability ─────────────────────────────────────────────────────────
 
-    /// Upgrades the contract WASM. Requires Upgrader role.
-    /// Increments the contract version and deploys the new implementation.
-    ///
-    /// # Arguments
-    /// * `upgrader` - Must hold the Upgrader role
-    /// * `new_wasm_hash` - Hash of the new WASM bytecode
-    ///
-    /// # Errors
-    /// * Panics if caller does not have Upgrader role
-    /// * Panics if wasm hash is all zeros
-    /// * Panics if contract is paused
-    pub fn upgrade(env: Env, upgrader: Address, new_wasm_hash: BytesN<32>) {
+    /// Proposes a contract WASM upgrade. Execution is available after the timelock.
+    pub fn propose_upgrade(env: Env, upgrader: Address, new_wasm_hash: BytesN<32>) {
         Self::bump_instance(&env);
+        upgrader.require_auth();
+        validate_non_default_address(&env, "upgrader", &upgrader);
+        Self::require_role(&env, &upgrader, Role::Upgrader);
+        require_with_error!(
+            &env,
+            new_wasm_hash != BytesN::from_array(&env, &[0u8; 32]),
+            "wasm hash must not be empty"
+        );
+        let proposed_ledger = env.ledger().sequence();
+        env.storage().instance().set(
+            &StorageKey::UpgradeProposal,
+            &UpgradeProposal {
+                new_wasm_hash,
+                proposed_ledger,
+                executable_ledger: proposed_ledger.saturating_add(UPGRADE_TIMELOCK_LEDGERS),
+            },
+        );
+    }
+
+    /// Executes the previously proposed contract WASM upgrade after the timelock.
+    pub fn execute_upgrade(env: Env, upgrader: Address) {
+        Self::bump_instance(&env);
+        upgrader.require_auth();
+        validate_non_default_address(&env, "upgrader", &upgrader);
+        Self::require_role(&env, &upgrader, Role::Upgrader);
+        Self::require_not_paused(&env);
+        let proposal: UpgradeProposal = env
+            .storage()
+            .instance()
+            .get(&StorageKey::UpgradeProposal)
+            .expect("upgrade not proposed");
+        require_with_error!(
+            &env,
+            env.ledger().sequence() >= proposal.executable_ledger,
+            "upgrade timelock not elapsed"
+        );
+        let mut state: ContractState = env.storage().instance().get(&CONTRACT_STATE).unwrap();
+        state.version = state
+            .version
+            .checked_add(1)
+            .expect("contract version overflow");
+        state.implementation_wasm_hash = Some(proposal.new_wasm_hash.clone());
+        env.storage().instance().set(&CONTRACT_STATE, &state);
+        env.deployer()
+            .update_current_contract_wasm(proposal.new_wasm_hash.clone());
+        env.storage()
+            .instance()
+            .remove(&StorageKey::UpgradeProposal);
+        ContractUpgraded {
+            new_wasm_hash: proposal.new_wasm_hash,
+        }
+        .publish(&env);
+    }
+
+    /// Deprecated immediate-upgrade entrypoint. Upgrades must use
+    /// `propose_upgrade` followed by `execute_upgrade`.
+    pub fn upgrade(env: Env, upgrader: Address, new_wasm_hash: BytesN<32>) {
+        upgrader.require_auth();
+        validate_non_default_address(&env, "upgrader", &upgrader);
+        Self::require_role(&env, &upgrader, Role::Upgrader);
+        let _ = new_wasm_hash;
+        panic!("immediate upgrades are disabled; use propose_upgrade and execute_upgrade");
+        /*
         let mut state: ContractState = env.storage().instance().get(&CONTRACT_STATE).unwrap();
         upgrader.require_auth();
         validate_non_default_address(&env, "upgrader", &upgrader);
@@ -3450,6 +3538,7 @@ impl LinkoraContract {
         env.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
         ContractUpgraded { new_wasm_hash }.publish(&env);
+        */
     }
 
     /// Return contract state.
@@ -3580,12 +3669,24 @@ impl LinkoraContract {
             .get(&post_key)
             .unwrap_or_else(|| panic!("post does not exist"));
 
-        require_with_error!(&env, reporter != post.author, "cannot report own post");
+        validate_reporter_can_report(&env, &reporter, &post.author);
 
         let report_key = StorageKey::Report(post_id, reporter.clone());
         if env.storage().persistent().has(&report_key) {
             panic!("already reported");
         }
+
+        let reporter_reports_key = StorageKey::OpenReports(reporter.clone());
+        let open_reports: u32 = env
+            .storage()
+            .persistent()
+            .get(&reporter_reports_key)
+            .unwrap_or(0u32);
+        require_with_error!(
+            &env,
+            open_reports < MAX_OPEN_REPORTS_PER_REPORTER,
+            "open reports limit reached"
+        );
 
         assert!(stake_amount > 0, "stake amount must be positive");
         token::Client::new(&env, &token).transfer(
@@ -3615,6 +3716,16 @@ impl LinkoraContract {
         };
         env.storage().persistent().set(&report_key, &report);
         Self::bump(&env, &report_key);
+
+        let next_open_reports = open_reports + 1;
+        if next_open_reports == 0 {
+            env.storage().persistent().remove(&reporter_reports_key);
+        } else {
+            env.storage()
+                .persistent()
+                .set(&reporter_reports_key, &next_open_reports);
+            Self::bump(&env, &reporter_reports_key);
+        }
 
         PostReportedEvent {
             post_id,
@@ -3966,6 +4077,22 @@ impl LinkoraContract {
         report.status = verdict;
         env.storage().persistent().set(&report_key, &report);
         Self::bump(&env, &report_key);
+
+        let reporter_reports_key = StorageKey::OpenReports(report.reporter.clone());
+        let current_open_reports: u32 = env
+            .storage()
+            .persistent()
+            .get(&reporter_reports_key)
+            .unwrap_or(0u32);
+        let next_open_reports = current_open_reports.saturating_sub(1);
+        if next_open_reports == 0 {
+            env.storage().persistent().remove(&reporter_reports_key);
+        } else {
+            env.storage()
+                .persistent()
+                .set(&reporter_reports_key, &next_open_reports);
+            Self::bump(&env, &reporter_reports_key);
+        }
     }
 
     /// Retrieves a report by post ID and reporter.

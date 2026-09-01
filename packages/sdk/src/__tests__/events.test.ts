@@ -105,7 +105,7 @@ describe("parseContractEvent", () => {
     const evt = parseContractEvent(raw) as Extract<LinkoraEvent, { type: "post_created" }>;
     expect(evt).not.toBeNull();
     expect(evt.type).toBe("post_created");
-    expect(evt.id).toBe(42);
+    expect(evt.id).toBe(42n);
     expect(evt.author).toBe("GAUTHOR");
   });
 
@@ -117,7 +117,7 @@ describe("parseContractEvent", () => {
     const evt = parseContractEvent(raw) as Extract<LinkoraEvent, { type: "post_deleted" }>;
     expect(evt).not.toBeNull();
     expect(evt.type).toBe("post_deleted");
-    expect(evt.post_id).toBe(7);
+    expect(evt.post_id).toBe(7n);
     expect(evt.author).toBe("GAUTHOR");
   });
 
@@ -130,7 +130,7 @@ describe("parseContractEvent", () => {
     expect(evt).not.toBeNull();
     expect(evt.type).toBe("like");
     expect(evt.user).toBe("GUSER");
-    expect(evt.post_id).toBe(5);
+    expect(evt.post_id).toBe(5n);
   });
 
   it("decodes UnfollowEvent", () => {
@@ -154,7 +154,7 @@ describe("parseContractEvent", () => {
     expect(evt).not.toBeNull();
     expect(evt.type).toBe("tip");
     expect(evt.tipper).toBe("GTIPPER");
-    expect(evt.post_id).toBe(3);
+    expect(evt.post_id).toBe(3n);
     expect(evt.amount).toBe(5000000n);
     expect(evt.fee).toBe(250000n);
   });
@@ -193,10 +193,10 @@ describe("parseContractEvent", () => {
     const evt = parseContractEvent(raw) as Extract<LinkoraEvent, { type: "gov_proposal_created" }>;
     expect(evt).not.toBeNull();
     expect(evt.type).toBe("gov_proposal_created");
-    expect(evt.proposal_id).toBe(1);
+    expect(evt.proposal_id).toBe(1n);
     expect(evt.proposer).toBe("GPROPOSER");
     expect(evt.parameter).toBe("FeeBps");
-    expect(evt.new_value).toBe(200);
+    expect(evt.new_value).toBe(200n);
   });
 
   it("decodes GovVoteEvent", () => {
@@ -207,7 +207,7 @@ describe("parseContractEvent", () => {
     const evt = parseContractEvent(raw) as Extract<LinkoraEvent, { type: "gov_vote" }>;
     expect(evt).not.toBeNull();
     expect(evt.type).toBe("gov_vote");
-    expect(evt.proposal_id).toBe(1);
+    expect(evt.proposal_id).toBe(1n);
     expect(evt.voter).toBe("GVOTER");
     expect(evt.support).toBe(true);
   });
@@ -220,9 +220,9 @@ describe("parseContractEvent", () => {
     const evt = parseContractEvent(raw) as Extract<LinkoraEvent, { type: "gov_proposal_executed" }>;
     expect(evt).not.toBeNull();
     expect(evt.type).toBe("gov_proposal_executed");
-    expect(evt.proposal_id).toBe(1);
+    expect(evt.proposal_id).toBe(1n);
     expect(evt.parameter).toBe("FeeBps");
-    expect(evt.new_value).toBe(200);
+    expect(evt.new_value).toBe(200n);
   });
 
   it("decodes DmKeyPublishedEvent", () => {
@@ -234,7 +234,7 @@ describe("parseContractEvent", () => {
     expect(evt).not.toBeNull();
     expect(evt.type).toBe("dm_key_published");
     expect(evt.user).toBe("GUSER");
-    expect(evt.key).toBe("BASE64_PUBKEY==");
+    expect(evt.public_key).toBe("BASE64_PUBKEY==");
   });
 
   it("decodes EmergencyBypassEvent", () => {

@@ -362,7 +362,26 @@ describe("TransactionQueue", () => {
 
       const statuses = events.map((e) => e.status);
       expect(statuses).toEqual(["pending", "simulated", "confirmed"]);
-      expect(events.find((e) => e.status === "confirmed")?.resourceFee).toBe("2000");
+
+      const confirmedEvent = events.find((e) => e.status === "confirmed");
+      expect(confirmedEvent?.resourceFee).toBe("2000");
+      // Dry-run "confirmed" must be distinguishable from a real confirmation:
+      expect(confirmedEvent?.dryRun).toBe(true);
+      expect(confirmedEvent?.hash).toBeUndefined();
+    });
+
+    it("marks real confirmations with dryRun:false (or undefined) and a hash", async () => {
+      const rpc = makeRpc();
+      const queue = new TransactionQueue({ signer: makeSigner(), rpc, pollIntervalMs: 0 });
+      const events: TxStatusEvent[] = [];
+      queue.on("status", (e) => events.push(e));
+      queue.enqueue("XDR_LIVE");
+
+      await queue.run({ dryRun: false });
+
+      const confirmedEvent = events.find((e) => e.status === "confirmed");
+      expect(confirmedEvent?.dryRun).not.toBe(true);
+      expect(confirmedEvent?.hash).toBeDefined();
     });
 
     it("dryRun queue-level default is honoured", async () => {
@@ -522,6 +541,55 @@ describe("TransactionQueue", () => {
 
       // per-run override: 50ms
       await expect(queue.run({ stepTimeoutMs: 50 })).rejects.toThrow(/timed out after 50ms/);
+    }, 2000);
+  });
+
+  describe("RPC timeouts", () => {
+    it("fails the step when sendTransaction times out", async () => {
+      const rpc: RpcClient = {
+        async simulateTransaction() {
+          return { success: true, resourceFee: "100" };
+        },
+        async sendTransaction() {
+          return new Promise(() => {}); // never resolves
+        },
+        async getTransaction() {
+          return { status: "SUCCESS" };
+        },
+      };
+      const queue = new TransactionQueue({
+        signer: makeSigner(),
+        rpc,
+        pollIntervalMs: 0,
+        rpcTimeoutMs: 50,
+        retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0, jitterFactor: 0 },
+      });
+      queue.enqueue("XDR_SEND_HANG");
+
+      await expect(queue.run()).rejects.toThrow(/sendTransaction timed out after 50ms/);
+    }, 2000);
+
+    it("fails the step when getTransaction times out", async () => {
+      const rpc: RpcClient = {
+        async simulateTransaction() {
+          return { success: true, resourceFee: "100" };
+        },
+        async sendTransaction() {
+          return { hash: "HASH_OK", status: "PENDING" };
+        },
+        async getTransaction() {
+          return new Promise(() => {}); // never resolves
+        },
+      };
+      const queue = new TransactionQueue({
+        signer: makeSigner(),
+        rpc,
+        pollIntervalMs: 0,
+        rpcTimeoutMs: 50,
+      });
+      queue.enqueue("XDR_GET_HANG");
+
+      await expect(queue.run()).rejects.toThrow(/getTransaction timed out after 50ms/);
     }, 2000);
   });
 });

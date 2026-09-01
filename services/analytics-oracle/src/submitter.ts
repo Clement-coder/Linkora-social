@@ -7,6 +7,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { logger } from "./logger.js";
+import { summarizeFootprint, assessFootprintGrowth, FootprintSummary } from "./codec.js";
 
 const DEFAULT_TIMEOUT = 30;
 
@@ -167,6 +168,22 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
 
 // ── Submission ────────────────────────────────────────────────────────────────
 
+/**
+ * The Soroban LedgerFootprint seen on the most recent successful simulation.
+ *
+ * The rpc.Server is owned by the caller and reused across submissions, so it
+ * does not track footprint state for us. We keep the last one here to detect
+ * when a freshly simulated footprint grows relative to the previous attestation
+ * (a warning triggers), and to guarantee each submission re-derives its own
+ * footprint instead of reusing a stale one.
+ */
+let lastFootprint: FootprintSummary | null = null;
+
+/** Reset footprint-growth tracking (for tests). */
+export function resetFootprintTracking(): void {
+  lastFootprint = null;
+}
+
 export async function submitAttestation(
   server: rpc.Server,
   networkPassphrase: string,
@@ -181,7 +198,11 @@ export async function submitAttestation(
 ): Promise<string> {
   // The whole flow is rebuilt on each attempt so the source account sequence
   // number is refreshed and the transaction is re-simulated and re-signed.
-  // The caller owns the rpc.Server instance and reuses it across all calls.
+  // The caller owns the rpc.Server instance and reuses it across all calls, so
+  // the simulation below is what guarantees the LedgerFootprint attached to
+  // this submission is fresh — never a stale copy left over from an earlier
+  // attestation.
+  const logContext = { creatorAddress, windowStart: windowStart.toString() };
   return withRetry(
     async () => {
       const op = new Contract(contractId).call(
@@ -203,12 +224,35 @@ export async function submitAttestation(
         .setTimeout(DEFAULT_TIMEOUT)
         .build();
 
-      const prepared = await server.prepareTransaction(tx);
+      // Re-simulate on every submission so the footprint reflects the current
+      // contract state. Servers may cache the last footprint; simulating here
+      // (rather than reusing a previously prepared transaction) re-derives it.
+      const sim = await server.simulateTransaction(tx);
+      if (rpc.Api.isSimulationError(sim)) {
+        throw new Error(`Transaction simulation failed: ${sim.error}`);
+      }
+
+      const footprint = summarizeFootprint(sim.transactionData.getFootprint());
+      const growth = assessFootprintGrowth(lastFootprint, footprint);
+      if (growth.grew) {
+        logger.warn(
+          {
+            ...logContext,
+            previousKeys: lastFootprint?.totalKeys,
+            currentKeys: footprint.totalKeys,
+            addedKeys: growth.addedKeys,
+          },
+          "Ledger footprint grew since the previous attestation submission"
+        );
+      }
+      lastFootprint = footprint;
+
+      const prepared = rpc.assembleTransaction(tx, sim).build();
       prepared.sign(oracleKeypair);
       const result = await server.sendTransaction(prepared);
       await server.pollTransaction(result.hash);
       return result.hash;
     },
-    { logContext: { creatorAddress, windowStart: windowStart.toString() } }
+    { logContext }
   );
 }

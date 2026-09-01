@@ -15,18 +15,46 @@
 import { Server as HttpServer } from "http";
 import { WebSocketServer, WebSocket, RawData } from "ws";
 import { EventBus, BusEvent, ALL_EVENTS } from "./bus";
+import { TokenBucket, wsRateLimiterFromEnv, wsMaxMessageBytesFromEnv } from "./ratelimit";
+
+/** WS close code for a connection dropped for violating server policy (RFC 6455). */
+const CLOSE_POLICY_VIOLATION = 1008;
+
+/** WS close code for payload exceeding max allowed size (RFC 6455). */
+const CLOSE_MESSAGE_TOO_LARGE = 1009;
+
+/** Consecutive over-budget frames tolerated before the connection is closed. */
+const DEFAULT_MAX_RATE_VIOLATIONS = 5;
 
 export interface WsServerOptions {
   /** URL path to accept WebSocket upgrades on. Default "/ws". */
   path?: string;
   /** Heartbeat interval in milliseconds. Default 15000. */
   heartbeatMs?: number;
+  /** Maximum allowed inbound frame size in bytes. Defaults to wsMaxMessageBytesFromEnv(). */
+  maxPayloadBytes?: number;
+  /**
+   * Per-connection inbound message budget. A frame received with an empty
+   * bucket is dropped (with an error frame sent back) rather than processed;
+   * a connection that keeps flooding past `maxViolations` consecutive
+   * over-budget frames is disconnected with close code 1008.
+   */
+  rateLimit?: {
+    /** Builds a fresh token bucket for each new connection. Defaults to `wsRateLimiterFromEnv()`. */
+    createBucket?: () => TokenBucket;
+    /** Default 5. */
+    maxViolations?: number;
+  };
 }
 
 interface ClientState {
   isAlive: boolean;
   /** Event types this client wants; null means "all". */
   types: Set<string> | null;
+  /** Per-connection inbound message budget. */
+  bucket: TokenBucket;
+  /** Consecutive frames received while the bucket was empty. */
+  rateViolations: number;
 }
 
 export interface WsHandle {
@@ -49,12 +77,21 @@ export function attachWebSocketServer(
 ): WsHandle {
   const path = opts.path ?? "/ws";
   const heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
+  const maxPayloadBytes = opts.maxPayloadBytes ?? wsMaxMessageBytesFromEnv();
 
-  const wss = new WebSocketServer({ server: httpServer, path });
+  const wss = new WebSocketServer({ server: httpServer, path, maxPayload: maxPayloadBytes });
   const clients = new Map<WebSocket, ClientState>();
 
+  const createBucket = opts.rateLimit?.createBucket ?? wsRateLimiterFromEnv;
+  const maxRateViolations = opts.rateLimit?.maxViolations ?? DEFAULT_MAX_RATE_VIOLATIONS;
+
   wss.on("connection", (ws: WebSocket) => {
-    const state: ClientState = { isAlive: true, types: null };
+    const state: ClientState = {
+      isAlive: true,
+      types: null,
+      bucket: createBucket(),
+      rateViolations: 0,
+    };
     clients.set(ws, state);
 
     ws.on("pong", () => {
@@ -62,6 +99,29 @@ export function attachWebSocketServer(
     });
 
     ws.on("message", (raw: RawData) => {
+      const rawLength = Buffer.isBuffer(raw)
+        ? raw.length
+        : Array.isArray(raw)
+        ? raw.reduce((acc, b) => acc + b.length, 0)
+        : typeof raw === "string"
+        ? Buffer.byteLength(raw)
+        : (raw as ArrayBuffer).byteLength;
+
+      if (rawLength > maxPayloadBytes) {
+        ws.close(CLOSE_MESSAGE_TOO_LARGE, "message too large");
+        return;
+      }
+
+      if (!state.bucket.tryRemove()) {
+        state.rateViolations += 1;
+        if (state.rateViolations > maxRateViolations) {
+          ws.close(CLOSE_POLICY_VIOLATION, "rate limit exceeded");
+          return;
+        }
+        sendError(ws, "rate limit exceeded, message dropped");
+        return;
+      }
+      state.rateViolations = 0;
       handleControlFrame(ws, state, raw);
     });
 

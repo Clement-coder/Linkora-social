@@ -113,7 +113,8 @@ async function ensureSchema(): Promise<void> {
   // migration 012 handles the conversion for existing deployments.
   const rawEventsExists = await pgPool
     .query<{ exists: boolean }>(`SELECT to_regclass('public.raw_events') IS NOT NULL AS exists`)
-    .then((r) => r.rows[0]?.exists ?? false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .then((r: any) => r.rows[0]?.exists ?? false);
 
   if (!rawEventsExists) {
     // Create the partitioned parent.
@@ -459,6 +460,8 @@ async function main(): Promise<void> {
       ratePerSec: cfg.rpcRateLimitPerSec,
       minPollMs: cfg.minPollIntervalMs,
       maxPollMs: cfg.maxPollIntervalMs,
+      circuitBreakerThreshold: cfg.streamCircuitBreakerThreshold,
+      circuitBreakerProbeIntervalMs: cfg.streamCircuitBreakerProbeIntervalMs,
       backfillConfig: cfg.backfill,
       backfillCoordinator,
     },

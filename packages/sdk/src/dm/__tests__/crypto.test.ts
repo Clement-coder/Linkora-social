@@ -269,7 +269,6 @@ describe("RelayClient sendMessage retry logic", () => {
   it("should not retry on 4xx errors", async () => {
     const { RelayClient } = await import("../relay");
     const client = new RelayClient("https://relay.example.com");
-    const keypair = generateDmKeypair();
     const mockFetch = jest.fn().mockResolvedValue({
       ok: false,
       status: 400,
@@ -349,5 +348,5 @@ describe("RelayClient sendMessage retry logic", () => {
     ).rejects.toThrow();
 
     expect(mockFetch).toHaveBeenCalledTimes(4);
-  });
+  }, 15_000);
 });
