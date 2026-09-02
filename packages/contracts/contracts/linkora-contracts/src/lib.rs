@@ -2379,8 +2379,13 @@ impl LinkoraContract {
         require_with_error!(&env, !env.storage().persistent().has(&key), "pool exists");
         require_with_error!(
             &env,
-            threshold > 0 && threshold <= initial_admins.len(),
+            threshold > 0,
             "invalid threshold"
+        );
+        require_with_error!(
+            &env,
+            threshold <= initial_admins.len(),
+            "threshold cannot exceed admin count"
         );
 
         // Clone admins for event payload before moving into storage
@@ -2704,6 +2709,12 @@ impl LinkoraContract {
 
         require_with_error!(
             &env,
+            threshold <= pool.admins.len(),
+            "threshold cannot exceed admin count"
+        );
+
+        require_with_error!(
+            &env,
             signers.len() >= pool.threshold,
             "insufficient signers"
         );
@@ -2715,12 +2726,6 @@ impl LinkoraContract {
             );
             signer.require_auth();
         }
-
-        require_with_error!(
-            &env,
-            threshold <= pool.admins.len(),
-            "threshold cannot exceed admin count"
-        );
 
         let old_threshold = pool.threshold;
         pool.threshold = threshold;
