@@ -383,3 +383,87 @@ describe("syncPendingPosts", () => {
     expect(mockedConfirmPendingPost).not.toHaveBeenCalled();
   });
 });
+
+describe("fetchAndCachePosts", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  function mockIndexerResponse(posts: unknown[]) {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({ posts }),
+    }) as unknown as typeof fetch;
+  }
+
+  it("looks up the local cache in a single batched call instead of one per post", async () => {
+    const indexerPosts = Array.from({ length: 20 }, (_, i) => ({
+      id: i,
+      author: `GAUTHOR${i}`,
+      content: `content-${i}`,
+      username: `user-${i}`,
+      tip_total: 0,
+      created_ledger: 1000,
+      like_count: 0,
+      has_liked: false,
+    }));
+    mockIndexerResponse(indexerPosts);
+    mockedGetCachedPostsByIds.mockResolvedValue(new Map());
+
+    await fetchAndCachePosts(20, 0);
+
+    // A per-post lookup would call this 20 times; batching keeps it to one call
+    // no matter how many posts the indexer returns.
+    expect(mockedGetCachedPostsByIds).toHaveBeenCalledTimes(1);
+    expect(mockedGetCachedPostsByIds).toHaveBeenCalledWith(indexerPosts.map((p) => String(p.id)));
+  });
+
+  it("prefers cached content/username over the indexer's fallback values", async () => {
+    mockIndexerResponse([
+      { id: "1", author: "GAUTHOR1", content: "raw indexer content", username: "raw_user" },
+    ]);
+    mockedGetCachedPostsByIds.mockResolvedValue(
+      new Map([
+        [
+          "1",
+          {
+            id: "1",
+            author: "GAUTHOR1",
+            username: "cached_user",
+            content: "cached content",
+            tip_total: 5,
+            timestamp: 500,
+            like_count: 2,
+            has_liked: true,
+          },
+        ],
+      ])
+    );
+
+    const [post] = await fetchAndCachePosts(1, 0);
+
+    expect(post).toMatchObject({ content: "cached content", username: "cached_user" });
+  });
+
+  it("falls back to indexer content/username and reconciles the fetched posts when nothing is cached", async () => {
+    mockIndexerResponse([{ id: "2", author: "GAUTHOR2", content: "", username: "" }]);
+    mockedGetCachedPostsByIds.mockResolvedValue(new Map());
+
+    const [post] = await fetchAndCachePosts(1, 0);
+
+    expect(post).toMatchObject({
+      content: "Content unavailable offline",
+      username: "GAUTHO...HOR2",
+    });
+    expect(mockedReconcilePosts).toHaveBeenCalledWith([post]);
+  });
+
+  it("throws and skips the cache lookup when the indexer request fails", async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false }) as unknown as typeof fetch;
+
+    await expect(fetchAndCachePosts(10, 0)).rejects.toThrow("Failed to fetch posts from indexer");
+    expect(mockedGetCachedPostsByIds).not.toHaveBeenCalled();
+  });
+});
