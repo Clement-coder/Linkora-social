@@ -22,6 +22,25 @@ export type TipState = {
 };
 
 /* ────────────────────────────────────────────────────────────────────────── */
+/*  Rollback events                                                          */
+/* ────────────────────────────────────────────────────────────────────────── */
+
+export type RolledBackEvent = {
+  kind: "follow" | "like" | "tip";
+  key: string;
+};
+
+export type RolledBackListener = (event: RolledBackEvent) => void;
+
+// Returns a deep clone so snapshots never share references with live state.
+// The optimistic state objects are plain JSON-serializable data (numbers and
+// booleans), so a structured clone is a safe deep copy and works in every
+// environment (Node, jsdom, browsers) without relying on structuredClone.
+function deepClone<T>(value: T): T {
+  return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
 /*  Store internals                                                          */
 /* ────────────────────────────────────────────────────────────────────────── */
 
@@ -32,6 +51,15 @@ const likeStateMap = new Map<string, LikeState>();
 // Key format: postId string
 const tipStateMap = new Map<string, TipState>();
 const listeners = new Set<() => void>();
+
+// Snapshots capture the pre-mutation state so a failed on-chain transaction
+// can restore the exact UI the user saw before optimistically applying the
+// mutation. They are keyed per state kind + key so rollback is scoped to the
+// exact post/user affected.
+const followSnapshots = new Map<string, FollowState | undefined>();
+const likeSnapshots = new Map<string, LikeState | undefined>();
+const tipSnapshots = new Map<string, TipState | undefined>();
+const rolledBackListeners = new Set<RolledBackListener>();
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
@@ -44,6 +72,21 @@ function notify() {
   for (const listener of listeners) {
     listener();
   }
+}
+
+function emitRolledBack(event: RolledBackEvent) {
+  for (const listener of rolledBackListeners) {
+    listener(event);
+  }
+  // Re-render any subscribed components so they observe the restored state.
+  notify();
+}
+
+function onRolledBack(listener: RolledBackListener) {
+  rolledBackListeners.add(listener);
+  return () => {
+    rolledBackListeners.delete(listener);
+  };
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
@@ -65,7 +108,30 @@ export const OptimisticStore = {
 
   clearFollowState(key: string) {
     followStateMap.delete(key);
+    followSnapshots.delete(key);
     notify();
+  },
+
+  // Capture the pre-mutation follow state so it can be restored on failure.
+  snapshotFollowState(key: string) {
+    followSnapshots.set(key, deepClone(followStateMap.get(key)));
+  },
+
+  // Restore the pre-mutation follow state and clear transient pending styling.
+  rollbackFollowState(key: string) {
+    if (!followSnapshots.has(key)) {
+      followSnapshots.delete(key);
+      return false;
+    }
+    const snapshot = followSnapshots.get(key);
+    if (snapshot === undefined) {
+      followStateMap.delete(key);
+    } else {
+      followStateMap.set(key, deepClone(snapshot));
+    }
+    followSnapshots.delete(key);
+    emitRolledBack({ kind: "follow", key });
+    return true;
   },
 
   setLikeState(key: string, state: LikeState) {
@@ -77,6 +143,32 @@ export const OptimisticStore = {
     return likeStateMap.get(key);
   },
 
+  clearLikeState(key: string) {
+    likeStateMap.delete(key);
+    likeSnapshots.delete(key);
+    notify();
+  },
+
+  snapshotLikeState(key: string) {
+    likeSnapshots.set(key, deepClone(likeStateMap.get(key)));
+  },
+
+  rollbackLikeState(key: string) {
+    if (!likeSnapshots.has(key)) {
+      likeSnapshots.delete(key);
+      return false;
+    }
+    const snapshot = likeSnapshots.get(key);
+    if (snapshot === undefined) {
+      likeStateMap.delete(key);
+    } else {
+      likeStateMap.set(key, deepClone(snapshot));
+    }
+    likeSnapshots.delete(key);
+    emitRolledBack({ kind: "like", key });
+    return true;
+  },
+
   setTipState(key: string, state: TipState) {
     tipStateMap.set(key, state);
     notify();
@@ -86,61 +178,35 @@ export const OptimisticStore = {
     return tipStateMap.get(key);
   },
 
-  clearLikeState(key: string) {
-    likeStateMap.delete(key);
-    notify();
-  },
-
   clearTipState(key: string) {
     tipStateMap.delete(key);
+    tipSnapshots.delete(key);
     notify();
   },
 
-  /**
-   * Reconcile optimistic state against a fresh server response.
-   *
-   * Resolution rules:
-   * 1. For each likeStateMap entry whose postId IS in visiblePosts,
-   *    delete it — the component will fall back to `initialState` which
-   *    reflects the server-confirmed value (server wins).
-   * 2. For each likeStateMap entry whose postId is NOT in visiblePosts,
-   *    delete it — the post has been filtered out and the optimistic
-   *    entry should not persist.
-   * 3. Entries belonging to a different userAddress are left untouched.
-   * 4. Same rules apply for tipStateMap (keyed by postId string).
-   */
-  reconcileFeed(userAddress: string | null, visiblePosts: Array<{ id: string | number }>) {
-    const visibleIds = new Set(visiblePosts.map((p) => String(p.id)));
-    let changed = false;
-
-    // Reconcile like state — keys are `${userAddress}:${postId}`
-    if (userAddress) {
-      for (const key of [...likeStateMap.keys()]) {
-        const separatorIdx = key.indexOf(":");
-        if (separatorIdx === -1) continue;
-
-        const keyUser = key.slice(0, separatorIdx);
-        if (keyUser !== userAddress) continue;
-
-        // Post is either present (server wins) or absent (filtered out) — either way, drop it
-        likeStateMap.delete(key);
-        changed = true;
-      }
-    }
-
-    // Reconcile tip state — keys are postId strings
-    for (const key of [...tipStateMap.keys()]) {
-      // Only prune entries for posts we have a definitive answer about.
-      // If the post is in the visible set, server truth is now available
-      // via initialState. If absent, the optimistic entry is stale.
-      tipStateMap.delete(key);
-      changed = true;
-    }
-
-    if (changed) {
-      notify();
-    }
+  snapshotTipState(key: string) {
+    tipSnapshots.set(key, deepClone(tipStateMap.get(key)));
   },
+
+  rollbackTipState(key: string) {
+    if (!tipSnapshots.has(key)) {
+      tipSnapshots.delete(key);
+      return false;
+    }
+    const snapshot = tipSnapshots.get(key);
+    if (snapshot === undefined) {
+      tipStateMap.delete(key);
+    } else {
+      tipStateMap.set(key, deepClone(snapshot));
+    }
+    tipSnapshots.delete(key);
+    emitRolledBack({ kind: "tip", key });
+    return true;
+  },
+
+  // Subscribe to rollback events so components can clear transient "pending"
+  // styling for the affected feed slice. Returns an unsubscribe function.
+  onRolledBack,
 
   // Legacy API for FollowList.tsx
   subscribe,

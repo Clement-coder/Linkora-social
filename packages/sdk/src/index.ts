@@ -18,4 +18,5 @@ export * from "./dm/index.js";
 // TODO(#1045): Ensure DmService and LinkoraEventSubscriber are explicitly re-exported here
 export * from "./signers/freighter.js";
 export * from "./queue.js";
+export * from "./classic.js";
 export * from "./submit.js";
