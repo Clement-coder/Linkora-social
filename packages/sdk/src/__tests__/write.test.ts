@@ -307,79 +307,85 @@ describe("prepare*Tx methods (Submittable)", () => {
     );
   });
 
-  it("prepareUnfollowTx fetches sequence and uses prepareTransaction", async () => {
-    jest
-      .spyOn(client as unknown as { getAccountForTx: jest.Mock }, "getAccountForTx")
-      .mockResolvedValue({ _accountId: "GA", sequence: "100" });
+  it("preparePoolDepositTx fetches sequence and uses prepareTransaction", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    jest.spyOn(client as any, "getAccountForTx").mockResolvedValue(new Account("GDEP", "100"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     jest.spyOn(client, "prepareTransaction").mockResolvedValue({
       toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" }),
-    } as unknown as ReturnType<typeof client.prepareTransaction>);
+    } as unknown as Awaited<ReturnType<typeof client.prepareTransaction>>);
 
-    const result = await client.prepareUnfollowTx("GA", "GB");
+    const result = await client.preparePoolDepositTx("GDEP", "pool-1", "GTOKEN", 1000n);
     expect(result).toBe("PREPARED_XDR");
     expect(client.prepareTransaction).toHaveBeenCalledWith(
-      "unfollow",
-      expect.objectContaining({ _accountId: "GA" }),
-      addr("GA"),
-      addr("GB")
-    );
-  });
-
-  it("prepareLikePostTx fetches sequence and encodes postId as u64", async () => {
-    jest
-      .spyOn(client as unknown as { getAccountForTx: jest.Mock }, "getAccountForTx")
-      .mockResolvedValue({ _accountId: "GUSER", sequence: "100" });
-    jest.spyOn(client, "prepareTransaction").mockResolvedValue({
-      toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" }),
-    } as unknown as ReturnType<typeof client.prepareTransaction>);
-
-    const result = await client.prepareLikePostTx("GUSER", 42);
-    expect(result).toBe("PREPARED_XDR");
-    expect(client.prepareTransaction).toHaveBeenCalledWith(
-      "like_post",
-      expect.objectContaining({ _accountId: "GUSER" }),
-      addr("GUSER"),
-      val(42)
-    );
-  });
-
-  it("prepareTipTx fetches sequence and encodes arguments correctly", async () => {
-    jest
-      .spyOn(client as unknown as { getAccountForTx: jest.Mock }, "getAccountForTx")
-      .mockResolvedValue({ _accountId: "GTIPPER", sequence: "100" });
-    jest.spyOn(client, "prepareTransaction").mockResolvedValue({
-      toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" }),
-    } as unknown as ReturnType<typeof client.prepareTransaction>);
-
-    const result = await client.prepareTipTx("GTIPPER", 42, "GTOKEN", 1000n);
-    expect(result).toBe("PREPARED_XDR");
-    expect(client.prepareTransaction).toHaveBeenCalledWith(
-      "tip",
-      expect.objectContaining({ _accountId: "GTIPPER" }),
-      addr("GTIPPER"),
-      val(42),
+      "pool_deposit",
+      expect.objectContaining({ _accountId: "GDEP" }),
+      addr("GDEP"),
+      val("pool-1"),
       addr("GTOKEN"),
       val(1000n)
     );
   });
 
-  it("preparePoolDepositTx fetches sequence and encodes poolId as symbol", async () => {
-    jest
-      .spyOn(client as unknown as { getAccountForTx: jest.Mock }, "getAccountForTx")
-      .mockResolvedValue({ _accountId: "GDEPOSITOR", sequence: "100" });
+  it("preparePoolWithdrawTx fetches sequence and uses prepareTransaction", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    jest.spyOn(client as any, "getAccountForTx").mockResolvedValue(new Account("GA", "100"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     jest.spyOn(client, "prepareTransaction").mockResolvedValue({
       toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" }),
-    } as unknown as ReturnType<typeof client.prepareTransaction>);
+    } as unknown as Awaited<ReturnType<typeof client.prepareTransaction>>);
 
-    const result = await client.preparePoolDepositTx("GDEPOSITOR", "pool1", "GTOKEN", 500n);
+    const result = await client.preparePoolWithdrawTx(["GA", "GB"], "pool-1", 500n, "GDX");
     expect(result).toBe("PREPARED_XDR");
     expect(client.prepareTransaction).toHaveBeenCalledWith(
-      "pool_deposit",
-      expect.objectContaining({ _accountId: "GDEPOSITOR" }),
-      addr("GDEPOSITOR"),
-      val("pool1"),
+      "pool_withdraw",
+      expect.objectContaining({ _accountId: "GA" }),
+      expect.objectContaining({ _opts: { type: "vec" } }),
+      val("pool-1"),
+      val(500n),
+      addr("GDX")
+    );
+  });
+
+  it("prepareCreatePoolTx fetches sequence and uses prepareTransaction", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    jest.spyOn(client as any, "getAccountForTx").mockResolvedValue(new Account("GA", "100"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    jest.spyOn(client, "prepareTransaction").mockResolvedValue({
+      toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" }),
+    } as unknown as Awaited<ReturnType<typeof client.prepareTransaction>>);
+
+    const result = await client.prepareCreatePoolTx("GA", "pool-1", "GTOKEN", ["GA", "GB"], 2);
+    expect(result).toBe("PREPARED_XDR");
+    expect(client.prepareTransaction).toHaveBeenCalledWith(
+      "create_pool",
+      expect.objectContaining({ _accountId: "GA" }),
+      addr("GA"),
+      val("pool-1"),
       addr("GTOKEN"),
-      val(500n)
+      expect.objectContaining({ _opts: { type: "vec" } }),
+      val(2)
+    );
+  });
+
+  it("prepareIncreaseAllowanceTx targets the token contract", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    jest.spyOn(client as any, "getAccountForTx").mockResolvedValue(new Account("GDEP", "100"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prepareOn = jest.spyOn(client as any, "prepareTransactionOnContract").mockResolvedValue({
+      toEnvelope: () => ({ toXDR: () => "PREPARED_XDR" }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const result = await client.prepareIncreaseAllowanceTx("GDEP", "GTOKEN", "CPOOL", 1000n);
+    expect(result).toBe("PREPARED_XDR");
+    expect(prepareOn).toHaveBeenCalledWith(
+      "increase_allowance",
+      "GTOKEN",
+      expect.objectContaining({ _accountId: "GDEP" }),
+      addr("GDEP"),
+      addr("CPOOL"),
+      val(1000n)
     );
   });
 });

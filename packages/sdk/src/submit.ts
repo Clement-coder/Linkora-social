@@ -3,6 +3,84 @@ import * as rpc from "@stellar/stellar-sdk/rpc";
 import { TransactionQueue, QueueSigner, RunOptions, RpcClient } from "./queue.js";
 import type { LinkoraClient } from "./client.js";
 
+const { isSimulationError } = rpc.Api;
+
+/**
+ * Wraps a Stellar SDK `rpc.Server` to satisfy the {@link RpcClient} interface
+ * expected by {@link TransactionQueue}.  The SDK's `Server` has richer
+ * method signatures (accepting Transaction objects, extra params, etc.) while
+ * `RpcClient` is a narrow, XDR-string-only contract used internally by the
+ * queue.
+ */
+function createRpcAdapter(server: rpc.Server): RpcClient {
+  return {
+    async simulateTransaction(xdr: string): Promise<SimulationResult> {
+      // The SDK's simulateTransaction expects a Transaction object.  Build a
+      // minimal Transaction from the XDR string so the call succeeds.
+      const { TransactionBuilder } = await import("@stellar/stellar-base");
+      // Use a dummy passphrase – the simulation endpoint doesn't validate it.
+      const tx = TransactionBuilder.fromXDR(xdr, "Test SDF Network ; September 2015");
+      const result = await server.simulateTransaction(tx);
+      const isError = isSimulationError(result);
+      return {
+        success: !isError,
+        resourceFee: String("minResourceFee" in result ? result.minResourceFee : "0"),
+        error: isError ? result.error : undefined,
+      };
+    },
+
+    async sendTransaction(signedXdr: string) {
+      const { TransactionBuilder } = await import("@stellar/stellar-base");
+      const tx = TransactionBuilder.fromXDR(signedXdr, "Test SDF Network ; September 2015");
+      const result = await server.sendTransaction(tx);
+      return {
+        hash: result.hash,
+        status: result.status as string,
+        errorResultXdr: "errorResultXdr" in result ? String(result.errorResultXdr) : undefined,
+      };
+    },
+
+    async getTransaction(hash: string) {
+      const result = await server.getTransaction(hash);
+      return {
+        status: result.status as string,
+        errorResultXdr: "errorResultXdr" in result ? String(result.errorResultXdr) : undefined,
+      };
+    },
+  };
+}
+
+/**
+ * Adapt a Soroban-rpc `Server` to the narrower {@link RpcClient} interface that
+ * `TransactionQueue` consumes, translating the raw SDK response shapes into the
+ * simplified ones the queue expects. Without this, the native `rpc.Server`
+ * (whose `simulateTransaction`/`sendTransaction`/`getTransaction` return rich,
+ * differently-shaped responses) is not structurally assignable to `RpcClient`.
+ */
+export function serverToRpcClient(server: rpc.Server): RpcClient {
+  return {
+    async simulateTransaction(xdr: string): Promise<SimulationResult> {
+      const response = await server.simulateTransaction(xdr);
+      if (rpc.Api.isSimulationError(response)) {
+        return { success: false, resourceFee: "0", error: response.error };
+      }
+      return { success: true, resourceFee: response.minResourceFee || "0" };
+    },
+    async sendTransaction(signedXdr: string) {
+      const response = await server.sendTransaction(signedXdr);
+      return {
+        hash: response.hash,
+        status: response.status,
+        errorResultXdr: response.errorResultXdr,
+      };
+    },
+    async getTransaction(hash: string) {
+      const response = await server.getTransaction(hash);
+      return { status: response.status, errorResultXdr: response.errorResultXdr };
+    },
+  };
+}
+
 /**
  * Convenience helper to sign and submit a single transaction.
  * Internally sets up a TransactionQueue, enqueues the transaction, and runs it.
@@ -46,7 +124,8 @@ export async function submitTransaction(
       const tx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
       const res = await server.sendTransaction(tx);
       const rawXdr = (res as unknown as { errorResultXdr?: string }).errorResultXdr;
-      const errorResultXdr = rawXdr ?? (res.errorResult ? res.errorResult.toXDR("base64") : undefined);
+      const errorResultXdr =
+        rawXdr ?? (res.errorResult ? res.errorResult.toXDR("base64") : undefined);
       return {
         hash: res.hash,
         status: res.status,
@@ -74,11 +153,11 @@ export async function submitTransaction(
 
   queue.enqueue(xdrString);
   await queue.run(opts);
-  
+
   const hashes = queue.submittedHashes;
   if (hashes.length === 0 && !opts?.dryRun) {
     throw new Error("Transaction was not submitted successfully.");
   }
-  
+
   return hashes[0] ?? "";
 }
