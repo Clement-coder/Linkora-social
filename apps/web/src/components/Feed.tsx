@@ -1,61 +1,88 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
+import { useEffect, useState } from "react";
+import { PostCard, Post } from "./PostCard";
+import { fetchIsPaused } from "../lib/api";
+import { OptimisticStore } from "../lib/optimisticStore";
 
-export interface Post {
-  id: string;
-  author: string;
-  content: string;
-  tip_total: string;
-  timestamp: string;
-  likes?: number;
-}
+/** How often to re-check the contract's pause status while the feed is mounted. */
+const PAUSE_POLL_INTERVAL_MS = 30_000;
 
-export interface FeedProps {
+interface FeedProps {
   posts: Post[];
   loading?: boolean;
-  isPaused?: boolean;
-  onLike?: (postId: string) => Promise<void>;
-  onTip?: (postId: string, amount: string) => Promise<void>;
+  onLike?: (postId: number) => void;
+  onTip?: (postId: number) => void;
+  likedPosts?: Set<number>;
 }
 
-export function Feed({
-  posts,
-  loading = false,
-  isPaused = false,
-  onLike,
-  onTip,
-}: FeedProps) {
-  const [actionError, setActionError] = useState<string | null>(null);
+export function Feed({ posts, loading, onLike, onTip, likedPosts = new Set() }: FeedProps) {
+  // Fetch on bootstrap and keep polling so the banner reflects pause/unpause
+  // without requiring a page reload.
+  const [paused, setPaused] = useState(false);
 
-  const executeGuardedWrite = async (action: () => Promise<void>) => {
-    if (isPaused) {
-      setActionError('Contract interaction is currently paused');
-      return;
-    }
-    setActionError(null);
-    try {
-      await action();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Action failed');
-    }
+  // Post ids with an optimistic like/follow transaction currently in flight.
+  // Used to show transient "pending" styling that is cleared on rollback or
+  // once the optimistic write settles.
+  const [pendingLikes, setPendingLikes] = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const check = async () => {
+      const isPaused = await fetchIsPaused();
+      if (!cancelled) setPaused(isPaused);
+    };
+
+    check();
+    const interval = setInterval(check, PAUSE_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Clear transient "pending" styling for the affected post when an optimistic
+  // like/follow write is rolled back after a failed transaction.
+  useEffect(() => {
+    const unsubscribe = OptimisticStore.onRolledBack((event) => {
+      if (event.kind !== "like" && event.kind !== "follow") return;
+      // Like/follow keys are `${userAddress}:${postId}`.
+      const postId = Number(event.key.split(":").pop());
+      if (Number.isNaN(postId)) return;
+      setPendingLikes((prev) => {
+        if (!prev.has(postId)) return prev;
+        const next = new Set(prev);
+        next.delete(postId);
+        return next;
+      });
+    });
+    return unsubscribe;
+  }, []);
+
+  const beginOptimisticWrite = (postId: number) => {
+    setPendingLikes((prev) => {
+      const next = new Set(prev);
+      next.add(postId);
+      return next;
+    });
   };
 
-  const handleLike = (postId: string) => {
-    if (!onLike) return;
-    executeGuardedWrite(() => onLike(postId));
-  };
-
-  const handleTip = (postId: string, amount: string) => {
-    if (!onTip) return;
-    executeGuardedWrite(() => onTip(postId, amount));
+  // Re-check immediately before submitting a write, to catch the contract
+  // being paused between polls (race condition), and only proceed if clear.
+  const guardedWrite = async (action: (postId: number) => void, postId: number) => {
+    const isPaused = await fetchIsPaused();
+    setPaused(isPaused);
+    if (isPaused) return;
+    beginOptimisticWrite(postId);
+    action(postId);
   };
 
   if (loading) {
     return (
-      <div className="space-y-4 max-w-xl mx-auto py-4">
+      <div style={styles.container}>
         {[1, 2, 3].map((i) => (
-          <div key={i} className="bg-gray-100 animate-pulse h-32 rounded-lg" />
+          <div key={i} style={styles.skeleton}></div>
         ))}
       </div>
     );
@@ -63,45 +90,120 @@ export function Feed({
 
   if (posts.length === 0) {
     return (
-      <div className="text-center py-12 text-gray-500">
-        <p className="text-lg font-medium">No posts available</p>
+      <div style={styles.empty}>
+        <div style={styles.emptyIcon}>📝</div>
+        <h3>No posts yet</h3>
+        <p style={styles.emptyText}>Be the first to share something!</p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-4 max-w-xl mx-auto py-4">
-      {actionError && (
-        <div className="bg-red-50 border border-red-200 text-red-700 text-sm p-3 rounded-md mb-4">
-          {actionError}
+    <div style={styles.container}>
+      {paused && (
+        <div style={styles.pausedBanner} role="alert">
+          Linkora is temporarily paused. Writes are disabled until the protocol resumes.
         </div>
       )}
-
       {posts.map((post) => (
-        <div key={post.id} className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
-          <div className="flex justify-between items-start mb-2">
-            <span className="text-sm font-semibold text-gray-800">@{post.author}</span>
-            <span className="text-xs text-gray-500">{post.timestamp}</span>
-          </div>
-          <p className="text-gray-900 mb-4">{post.content}</p>
-          <div className="flex items-center gap-4 text-sm text-gray-600">
-            <button
-              onClick={() => handleLike(post.id)}
-              disabled={isPaused}
-              className="hover:text-blue-600 disabled:opacity-50 font-medium"
-            >
-              Like ({post.likes || 0})
-            </button>
-            <button
-              onClick={() => handleTip(post.id, '1.0')}
-              disabled={isPaused}
-              className="hover:text-green-600 disabled:opacity-50 font-medium"
-            >
-              Tip XLM ({post.tip_total})
-            </button>
-          </div>
+        <div key={post.id} style={styles.postWrap}>
+          <PostCard post={post} />
+          {(onLike || onTip) && (
+            <div style={styles.actions}>
+              {onLike && (
+                <button
+                  type="button"
+                  style={{
+                    ...styles.actionButton,
+                    ...(paused ? styles.actionButtonDisabled : {}),
+                    ...(pendingLikes.has(Number(post.id)) ? styles.actionButtonPending : {}),
+                  }}
+                  disabled={paused}
+                  onClick={() => guardedWrite(() => onLike(Number(post.id)), Number(post.id))}
+                >
+                  {pendingLikes.has(Number(post.id))
+                    ? "Liking..."
+                    : likedPosts.has(Number(post.id))
+                      ? "Liked"
+                      : "Like"}
+                </button>
+              )}
+              {onTip && (
+                <button
+                  type="button"
+                  style={{ ...styles.actionButton, ...(paused ? styles.actionButtonDisabled : {}) }}
+                  disabled={paused}
+                  onClick={() => guardedWrite(() => onTip(Number(post.id)), Number(post.id))}
+                >
+                  Tip
+                </button>
+              )}
+            </div>
+          )}
         </div>
       ))}
     </div>
   );
 }
+
+const styles: Record<string, React.CSSProperties> = {
+  container: {
+    maxWidth: "600px",
+    width: "100%",
+    margin: "0 auto",
+    padding: "var(--spacing-md)",
+  },
+  skeleton: {
+    height: "200px",
+    background: "var(--color-bg-secondary)",
+    borderRadius: "12px",
+    marginBottom: "var(--spacing-md)",
+    animation: "pulse 1.5s ease-in-out infinite",
+  },
+  postWrap: {
+    marginBottom: "var(--spacing-md)",
+  },
+  pausedBanner: {
+    background: "var(--color-warning-bg, #fff3cd)",
+    color: "var(--color-warning-text, #664d03)",
+    border: "1px solid var(--color-warning-border, #ffe69c)",
+    borderRadius: "8px",
+    padding: "var(--spacing-sm) var(--spacing-md)",
+    marginBottom: "var(--spacing-md)",
+    fontSize: "0.9rem",
+  },
+  actions: {
+    display: "flex",
+    gap: "var(--spacing-sm)",
+    padding: "var(--spacing-sm) 0",
+  },
+  actionButton: {
+    border: "1px solid var(--border)",
+    borderRadius: "8px",
+    background: "var(--muted)",
+    color: "var(--foreground)",
+    padding: "8px 12px",
+    cursor: "pointer",
+  },
+  actionButtonDisabled: {
+    opacity: 0.5,
+    cursor: "not-allowed",
+  },
+  actionButtonPending: {
+    opacity: 0.7,
+    cursor: "progress",
+    animation: "pulse 1.5s ease-in-out infinite",
+  },
+  empty: {
+    textAlign: "center",
+    padding: "var(--spacing-xl)",
+    color: "var(--color-text-secondary)",
+  },
+  emptyIcon: {
+    fontSize: "3rem",
+    marginBottom: "var(--spacing-md)",
+  },
+  emptyText: {
+    marginTop: "var(--spacing-sm)",
+  },
+};
