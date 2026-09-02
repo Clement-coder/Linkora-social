@@ -195,6 +195,9 @@ export default function FeedPage() {
 
         const newPosts = append ? [...posts, ...fetchedPosts] : fetchedPosts;
         persistFeed({ posts: newPosts, cursor: cursorParam, hasMore: data.has_more ?? false });
+
+        // Reconcile optimistic state against the fresh server response (#1203)
+        OptimisticStore.reconcileFeed(currentUserAddress, newPosts);
       } catch (err) {
         setError(err instanceof Error ? err.message : "An error occurred");
       } finally {
@@ -202,7 +205,7 @@ export default function FeedPage() {
         setLoadingMore(false);
       }
     },
-    [posts, persistFeed]
+    [posts, persistFeed, currentUserAddress]
   );
 
   const fetchFollowingFeed = useCallback(
@@ -231,6 +234,8 @@ export default function FeedPage() {
           setFollowsNobody(true);
           setLoading(false);
           setLoadingMore(false);
+          // No visible posts — prune all optimistic entries (#1203)
+          OptimisticStore.reconcileFeed(currentUserAddress, []);
           return;
         }
         setFollowsNobody(false);
@@ -267,6 +272,9 @@ export default function FeedPage() {
           cursor: cursorParam,
           hasMore: startIdx + paginated.length < allFetchedPosts.length,
         });
+
+        // Reconcile optimistic state against the fresh server response (#1203)
+        OptimisticStore.reconcileFeed(currentUserAddress, newPosts);
       } catch (err) {
         setError(err instanceof Error ? err.message : "An error occurred");
       } finally {
