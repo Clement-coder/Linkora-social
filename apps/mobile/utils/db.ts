@@ -201,10 +201,10 @@ export async function reconcilePosts(remotePosts: Post[]): Promise<void> {
 
     // Evict stale synced rows that are no longer in the remote set.
     if (remotePosts.length > 0) {
-      const remoteIds = remotePosts.map((p) => `'${String(p.id)}'`).join(",");
+      const remoteIds = remotePosts.map(() => "?").join(",");
       await db.runAsync(
         `DELETE FROM cached_posts WHERE sync_status = 'synced' AND id NOT IN (${remoteIds})`,
-        []
+        remotePosts.map((post) => String(post.id))
       );
     }
   });

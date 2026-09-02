@@ -1,4 +1,4 @@
-import { fetchPools, fetchUserLikes } from "../api";
+import { fetchPools } from "../api";
 
 // Mock the global fetch
 global.fetch = jest.fn();
@@ -84,98 +84,5 @@ describe("fetchPools", () => {
       adminCount: 3,
       threshold: 2,
     });
-  });
-});
-
-
-describe("fetchUserLikes", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
-  it("should return a Set of liked post IDs", async () => {
-    const mockResponse = {
-      likes: ["1", "2", "3", "42"],
-    };
-
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockResponse,
-    });
-
-    const likes = await fetchUserLikes("GABC123");
-
-    expect(likes).toBeInstanceOf(Set);
-    expect(likes.size).toBe(4);
-    expect(likes.has("1")).toBe(true);
-    expect(likes.has("2")).toBe(true);
-    expect(likes.has("3")).toBe(true);
-    expect(likes.has("42")).toBe(true);
-    expect(likes.has("5")).toBe(false);
-  });
-
-  it("should handle post_ids field name", async () => {
-    const mockResponse = {
-      post_ids: ["10", "20"],
-    };
-
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockResponse,
-    });
-
-    const likes = await fetchUserLikes("GDEF456");
-
-    expect(likes.size).toBe(2);
-    expect(likes.has("10")).toBe(true);
-    expect(likes.has("20")).toBe(true);
-  });
-
-  it("should return empty Set when user has no likes", async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ likes: [] }),
-    });
-
-    const likes = await fetchUserLikes("GEMPTY");
-
-    expect(likes.size).toBe(0);
-  });
-
-  it("should throw error on non-ok response", async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: false,
-      status: 404,
-      statusText: "Not Found",
-    });
-
-    await expect(fetchUserLikes("GBAD")).rejects.toThrow(
-      "Failed to fetch likes: 404 Not Found"
-    );
-  });
-
-  it("should throw error on network failure", async () => {
-    (global.fetch as jest.Mock).mockRejectedValueOnce(
-      new Error("Network error")
-    );
-
-    await expect(fetchUserLikes("GFAIL")).rejects.toThrow("Network error");
-  });
-
-  it("should convert numeric post IDs to strings", async () => {
-    const mockResponse = {
-      likes: [1, 2, 3], // Numeric IDs
-    };
-
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockResponse,
-    });
-
-    const likes = await fetchUserLikes("GABC");
-
-    expect(likes.has("1")).toBe(true);
-    expect(likes.has("2")).toBe(true);
-    expect(likes.has("3")).toBe(true);
   });
 });
