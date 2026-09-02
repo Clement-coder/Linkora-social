@@ -148,6 +148,25 @@ export class CircuitBreakerError extends LinkoraError {
   }
 }
 
+/**
+ * Thrown when the deployed contract version or capability marker does not match SDK expectation.
+ */
+export class VersionMismatchError extends LinkoraError {
+  constructor(message: string, details?: Record<string, unknown>, originalError?: unknown) {
+    super(message, "VERSION_MISMATCH", details, originalError);
+  }
+}
+
+/**
+ * Discriminated result type for on-chain read operations.
+ * Callers can explicitly distinguish valid data, genuinely empty/absent data, and errors.
+ */
+export type ReadResult<T> =
+  | { ok: true; value: T; absent?: false }
+  | { ok: true; value: null; absent: true }
+  | { ok: false; error: LinkoraError };
+
+
 // ── Contract error codes ──────────────────────────────────────────────────────
 
 export enum ContractErrorCode {
