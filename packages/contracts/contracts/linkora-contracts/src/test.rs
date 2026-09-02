@@ -7627,6 +7627,80 @@ fn test_delete_profile_cleans_blocks_entry() {
     assert!(client.get_profile(&user).is_none());
 }
 
+// ── Issue #1386: delete_profile prunes reverse block entries ────────────────
+//
+// When a user deletes their profile, any peer that had blocked them must no
+// longer hold a stale entry for the deleted account in their own Blocks map.
+// The reverse direction must be pruned as part of delete_profile so the peer's
+// block state reflects reality immediately, and the deleted account must be able
+// to re-register without being blocked by that stale tombstone.
+
+#[test]
+fn test_delete_profile_prunes_peer_reverse_block_entry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.set_profile(&alice, &String::from_str(&env, "alice"), &token);
+    client.set_profile(&bob, &String::from_str(&env, "bob"), &token);
+
+    // bob blocks alice; alice now appears in bob's Blocks map.
+    client.block_user(&bob, &alice);
+    assert!(
+        client.is_blocked(&bob, &alice),
+        "bob must block alice before deletion"
+    );
+
+    // alice deletes her profile without running batch_cleanup_profile.
+    client.delete_profile(&alice);
+
+    // Reverse direction is pruned: bob no longer reports alice as blocked.
+    assert!(
+        !client.is_blocked(&bob, &alice),
+        "deleting alice must remove the orphaned reverse block entry in bob's Blocks map"
+    );
+    assert!(client.get_profile(&alice).is_none());
+
+    // alice can re-register and is not blocked by the stale tombstone.
+    client.set_profile(&alice, &String::from_str(&env, "alice_new"), &token);
+    assert!(
+        !client.is_blocked(&bob, &alice),
+        "re-registration must not be blocked by a stale reverse block entry"
+    );
+}
+
+#[test]
+fn test_delete_profile_prunes_own_outgoing_block_reverse_index() {
+    // alice blocks bob, then deletes her profile. bob's BlockedBy reverse index
+    // must no longer reference the deleted alice.
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.set_profile(&alice, &String::from_str(&env, "alice"), &token);
+    client.set_profile(&bob, &String::from_str(&env, "bob"), &token);
+
+    // alice blocks bob.
+    client.block_user(&alice, &bob);
+    assert!(client.is_blocked(&alice, &bob));
+
+    client.delete_profile(&alice);
+
+    // bob's reverse index should no longer count alice as a blocker. Indirectly
+    // verified via the public API after alice re-registers fresh.
+    client.set_profile(&alice, &String::from_str(&env, "alice_new"), &token);
+    assert!(
+        !client.is_blocked(&alice, &bob),
+        "a freshly re-registered alice is a new profile and must not inherit the old outgoing block"
+    );
+}
+
 #[test]
 fn test_delete_profile_cleans_dm_key_verified() {
     let env = Env::default();

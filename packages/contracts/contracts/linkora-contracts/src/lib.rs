@@ -30,6 +30,7 @@ pub enum StorageKey {
     Like(u64, Address), // persistent: (post_id, user) -> bool
     AuthorPosts(Address), // persistent: author -> Vec<u64> of post IDs
     Blocks(Address),    // persistent: blocker -> Map<Address, ()>
+    BlockedBy(Address), // persistent: blocked -> Map<Address, ()> (reverse index: who blocked this user)
     UsernameIndex(String), // persistent: username -> owner Address (reverse index for uniqueness)
     TipCooldown(u64, Address), // temporary: (post_id, tipper) -> last-tip ledger sequence number
     PoolDepositCooldown(Symbol, Address), // temporary: (pool_id, depositor) -> last-deposit ledger sequence number
@@ -981,6 +982,63 @@ impl LinkoraContract {
         env.storage()
             .persistent()
             .remove(&StorageKey::CredentialRoot(user.clone()));
+
+        // Prune the user's own block map and the reverse-index entries in both
+        // directions so no peer retains a stale reference to the deleted account.
+        // 1. Reverse: for every blocker that had blocked `user`, remove `user` from that
+        //    blocker's Blocks map.
+        // 2. Forward: for every target `user` had blocked, drop `user` from that target's
+        //    BlockedBy reverse index.
+        if let Some(blocked_by) = env
+            .storage()
+            .persistent()
+            .get::<_, Map<Address, ()>>(&StorageKey::BlockedBy(user.clone()))
+        {
+            for blocker in blocked_by.keys().iter() {
+                let blocks_key = StorageKey::Blocks(blocker.clone());
+                if let Some(mut blocks) = env
+                    .storage()
+                    .persistent()
+                    .get::<_, Map<Address, ()>>(&blocks_key)
+                {
+                    blocks.remove(user.clone());
+                    if blocks.is_empty() {
+                        env.storage().persistent().remove(&blocks_key);
+                    } else {
+                        env.storage().persistent().set(&blocks_key, &blocks);
+                        Self::bump(&env, &blocks_key);
+                    }
+                }
+            }
+        }
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::BlockedBy(user.clone()));
+
+        if let Some(blocks) = env
+            .storage()
+            .persistent()
+            .get::<_, Map<Address, ()>>(&StorageKey::Blocks(user.clone()))
+        {
+            for blocked in blocks.keys().iter() {
+                let reversed_key = StorageKey::BlockedBy(blocked.clone());
+                if let Some(mut blocked_by) = env
+                    .storage()
+                    .persistent()
+                    .get::<_, Map<Address, ()>>(&reversed_key)
+                {
+                    if blocked_by.contains_key(user.clone()) {
+                        blocked_by.remove(user.clone());
+                        if blocked_by.is_empty() {
+                            env.storage().persistent().remove(&reversed_key);
+                        } else {
+                            env.storage().persistent().set(&reversed_key, &blocked_by);
+                            Self::bump(&env, &reversed_key);
+                        }
+                    }
+                }
+            }
+        }
         env.storage()
             .persistent()
             .remove(&StorageKey::Blocks(user.clone()));
@@ -1775,6 +1833,17 @@ impl LinkoraContract {
         env.storage().persistent().set(&key, &blocks);
         Self::bump(&env, &key);
 
+        // Maintain the reverse index: record `blocker` as having blocked `blocked`
+        let reversed_key = StorageKey::BlockedBy(blocked.clone());
+        let mut blocked_by: Map<Address, ()> = env
+            .storage()
+            .persistent()
+            .get(&reversed_key)
+            .unwrap_or(Map::new(&env));
+        blocked_by.set(blocker.clone(), ());
+        env.storage().persistent().set(&reversed_key, &blocked_by);
+        Self::bump(&env, &reversed_key);
+
         // Clean up follow relationships between blocker and blocked
         Self::cleanup_follow_on_block(&env, &blocker, &blocked);
 
@@ -1813,6 +1882,24 @@ impl LinkoraContract {
         blocks.remove(blocked.clone());
         env.storage().persistent().set(&key, &blocks);
         Self::bump(&env, &key);
+
+        // Maintain the reverse index: remove `blocker` from `blocked`'s blocker set
+        let reversed_key = StorageKey::BlockedBy(blocked.clone());
+        if let Some(mut blocked_by) = env
+            .storage()
+            .persistent()
+            .get::<_, Map<Address, ()>>(&reversed_key)
+        {
+            if blocked_by.contains_key(blocker.clone()) {
+                blocked_by.remove(blocker.clone());
+                if blocked_by.is_empty() {
+                    env.storage().persistent().remove(&reversed_key);
+                } else {
+                    env.storage().persistent().set(&reversed_key, &blocked_by);
+                    Self::bump(&env, &reversed_key);
+                }
+            }
+        }
         UnblockEvent { blocker, blocked }.publish(&env);
     }
 
@@ -3914,6 +4001,11 @@ impl LinkoraContract {
         let blocks_key = StorageKey::Blocks(user.clone());
         if env.storage().persistent().has(&blocks_key) {
             keys.push_back(blocks_key);
+        }
+
+        let blocked_by_key = StorageKey::BlockedBy(user.clone());
+        if env.storage().persistent().has(&blocked_by_key) {
+            keys.push_back(blocked_by_key);
         }
 
         let following_count_key = StorageKey::FollowingCount(user.clone());
