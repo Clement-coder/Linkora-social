@@ -48,6 +48,7 @@ interface NotificationsContextValue {
   // Global unread badge (persisted across sessions)
   unreadCount: number;
   incrementUnread: () => void;
+  decrementUnread: () => void;
   resetUnread: () => void;
 
   // Derived count of unread inbox notifications
@@ -69,6 +70,7 @@ interface NotificationsContextValue {
 const NotificationsContext = createContext<NotificationsContextValue>({
   unreadCount: 0,
   incrementUnread: () => {},
+  decrementUnread: () => {},
   resetUnread: () => {},
   inboxUnreadCount: 0,
   actionNotifications: [],
@@ -174,7 +176,13 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
     localStorage.removeItem(LS_UNREAD_KEY);
   }, []);
 
-  // ---- Action notifications (add/update/get) ----
+  const decrementUnread = useCallback(() => {
+    setUnreadCount((prev) => {
+      const next = Math.max(0, prev - 1);
+      localStorage.setItem(LS_UNREAD_KEY, String(next));
+      return next;
+    });
+  }, []);
 
   const addNotification = useCallback(
     (notification: NewActionNotification) => {
@@ -200,14 +208,19 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
     [incrementUnread]
   );
 
-  const getNotification = useCallback(
-    (id: string): ActionNotification | undefined => actionNotifications[id],
-    [actionNotifications]
-  );
-
-  const actionNotificationsList = useMemo(
-    () => Object.values(actionNotifications).sort((a, b) => a.createdAt - b.createdAt),
-    [actionNotifications]
+  return (
+    <NotificationsContext.Provider
+      value={{
+        unreadCount,
+        incrementUnread,
+        decrementUnread,
+        resetUnread,
+        addNotification,
+        updateNotification,
+      }}
+    >
+      {children}
+    </NotificationsContext.Provider>
   );
 
   // ---- Inbox notifications (persistent, indexer-driven) ----
