@@ -64,6 +64,7 @@ export class ConnectionHealthMonitor {
   private stopped = false;
   private hasChecked = false;
   private retryMetrics: RetryMetrics = emptyRetryMetrics();
+  private readonly _server?: rpc.Server;
 
   private boundResume = () => this.resume();
 

@@ -390,7 +390,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * ```
    */
   async simulate(method: string, ...args: xdr.ScVal[]): Promise<SimulationResult> {
-    const server = this.createRpcServer();
+    const server = this._rpcServer;
     const contract = new Contract(this._contractId);
     const buildOp = () => contract.call(method, ...args);
 
@@ -574,7 +574,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     sourceAccount: Account,
     ops: Array<{ method: string; args: xdr.ScVal[] }>
   ): Promise<Transaction> {
-    const server = this.createRpcServer();
+    const server = this._rpcServer;
     const contract = new Contract(this._contractId);
 
     const tempSource = Keypair.random();
@@ -2161,7 +2161,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     method: string,
     ...args: xdr.ScVal[]
   ): Promise<xdr.ScVal | null> {
-    const server = this.createRpcServer();
+    const server = this._rpcServer;
     const contract = new Contract(contractId);
     const op = contract.call(method, ...args);
 
