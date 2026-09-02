@@ -13,6 +13,21 @@ export interface PoolData {
 }
 
 /**
+ * Fetch the set of post IDs that a user has liked.
+ * Returns a Set for O(1) lookup performance.
+ * Throws an error if the indexer is unreachable.
+ */
+export async function fetchUserLikes(userAddress: string): Promise<Set<string>> {
+  const res = await fetch(`${INDEXER_URL}/api/likes/${userAddress}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch likes: ${res.status} ${res.statusText}`);
+  }
+  const data = await res.json();
+  const likes: string[] = data.likes ?? data.post_ids ?? [];
+  return new Set(likes.map(String));
+}
+
+/**
  * Fetch all pools from the indexer.
  * Throws an error if the indexer is unreachable or returns an error response.
  */

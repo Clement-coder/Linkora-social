@@ -21,6 +21,11 @@ const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
 // and one underlying rpc.Server connection, avoiding per-action overhead.
 const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
 
+// ── Shared Client Instance ───────────────────────────────────────────────────
+// Hoist a single LinkoraClient to module scope so all handlers reuse one client
+// and one underlying rpc.Server connection, avoiding per-action overhead.
+const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
+
 export default function GovernancePage() {
   const { address, connected } = useWalletContext();
   const [proposals, setProposals] = useState<ProposalWithQuorum[]>([]);

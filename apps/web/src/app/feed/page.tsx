@@ -52,9 +52,12 @@ function InteractivePostCard({
   const [isTipping, setIsTipping] = useState(false);
   const postId = String(post.id);
 
+  // Determine initial liked state from the fetched user likes
+  const initialIsLiked = userLikes.has(postId);
+
   // Optimistic Like State
   const likeState = useOptimisticLike(currentUserAddress, postId, {
-    isLiked: false, // fallback truth would come from contract/indexer hasLiked API
+    isLiked: initialIsLiked,
     likeCount: Number(post.like_count ?? 0),
   });
 
@@ -158,6 +161,10 @@ export default function FeedPage() {
   const [cursor, setCursor] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
+
+  // User's liked posts set (for seeding initial like state)
+  const [userLikes, setUserLikes] = useState<Set<string>>(new Set());
+  const [likesLoading, setLikesLoading] = useState(false);
 
   // Real-time updates via WebSocket
   const [hasNewPosts, setHasNewPosts] = useState(false);
