@@ -1,4 +1,5 @@
-/* globals describe, it, expect, jest, beforeEach, afterEach */
+// @ts-nocheck
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { signAndSubmitTransaction, buildSignAndSubmit } from "./tx";
 import { signTransaction } from "@stellar/freighter-api";
 
@@ -7,38 +8,21 @@ jest.mock("@stellar/freighter-api", () => ({
   signTransaction: jest.fn(),
 }));
 
-// Shared mock server instance so tests can configure return values
-// that the function-under-test (which creates its own Server) will use.
-const mockServerMethods = {
-  getAccount: jest.fn(),
-  simulateTransaction: jest.fn(),
-  sendTransaction: jest.fn(),
-  getTransaction: jest.fn(),
-};
-
+// Mock Stellar SDK
 jest.mock("@stellar/stellar-sdk", () => {
-  const txInstance = {
-    addOperation: jest.fn().mockReturnThis(),
-    setTimeout: jest.fn().mockReturnThis(),
-    build: jest.fn().mockReturnValue("mock-built-tx"),
-  };
-
-  const TransactionBuilder: any = jest.fn().mockImplementation(() => txInstance);
-  TransactionBuilder.fromXDR = jest.fn().mockReturnValue("mock-from-xdr-tx");
-
+  const actual = jest.requireActual("@stellar/stellar-sdk");
   return {
-    TransactionBuilder,
-    BASE_FEE: "100",
-    Contract: jest.fn().mockImplementation(() => ({
-      call: jest.fn().mockReturnValue("mock-op"),
-    })),
-    Address: {
-      fromString: jest.fn().mockReturnValue({
-        toScVal: jest.fn().mockReturnValue("mock-sc-val"),
-      }),
+    ...actual,
+    TransactionBuilder: {
+      fromXDR: jest.fn(),
     },
     rpc: {
-      Server: jest.fn().mockImplementation(() => mockServerMethods),
+      Server: jest.fn().mockImplementation(() => ({
+        getAccount: jest.fn(),
+        simulateTransaction: jest.fn(),
+        sendTransaction: jest.fn(),
+        getTransaction: jest.fn(),
+      })),
       Api: {
         isSimulationError: jest.fn(),
       },
@@ -135,10 +119,11 @@ describe("Transaction Utility Functions", () => {
         status: "PENDING",
       };
 
-      mockServerMethods.getAccount.mockResolvedValue(mockAccount);
-      mockServerMethods.simulateTransaction.mockResolvedValue(mockSimulated);
-      (StellarRpc.Api.isSimulationError as unknown as jest.Mock).mockReturnValue(false);
-      (StellarRpc.assembleTransaction as unknown as jest.Mock).mockReturnValue({
+      const mockServer = new StellarRpc.Server(mockConfig.rpcUrl);
+      (mockServer.getAccount as any).mockResolvedValue(mockAccount);
+      (mockServer.simulateTransaction as any).mockResolvedValue(mockSimulated);
+      (StellarRpc.Api.isSimulationError as any).mockReturnValue(false);
+      (StellarRpc.assembleTransaction as any).mockReturnValue({
         build: jest.fn().mockReturnValue({
           toXDR: jest.fn().mockReturnValue("unsigned-xdr"),
         }),
