@@ -113,7 +113,6 @@ export class ConnectionHealthMonitor {
     }
   }
 
-
   /** Alias for start(). Useful for resuming after a sustained outage stops polling. */
   resume(): void {
     this.start();
@@ -156,7 +155,10 @@ export class ConnectionHealthMonitor {
   }
 
   private scheduleCheck(delayMs: number): void {
-    const baseJitter = delayMs === 0 ? Math.random() * this.backoffMs : delayMs * 0.2 * Math.random();
+    const baseJitter =
+      delayMs === 0
+        ? Math.random() * Math.min(this.intervalMs, 100)
+        : delayMs * 0.2 * Math.random();
     this.timer = setTimeout(() => this.runCheck(), delayMs + baseJitter);
   }
 

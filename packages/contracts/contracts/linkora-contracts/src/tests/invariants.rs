@@ -1,4 +1,5 @@
 #![cfg(test)]
+extern crate std;
 
 use crate::test::{
     credential_authority_pubkey, credential_authority_signing_key, sign_credential_root,

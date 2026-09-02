@@ -2244,6 +2244,47 @@ fn test_set_fee_non_admin_panics() {
     client.set_fee(&outsider, &100);
 }
 
+#[test]
+fn test_set_fee_max_boundary_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    // Set fee to the maximum allowed (100%) should succeed.
+    client.set_fee(&admin, &10_000);
+    assert_eq!(client.get_fee_bps(), 10_000);
+}
+
+#[test]
+#[should_panic(expected = "fee_bps must be between 0 and 10000")]
+fn test_set_fee_rejects_value_above_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    // 20_000 bps = 200%, which would make fee computation exceed the
+    // transferred amount. Must be rejected, not clamped or silently accepted.
+    client.set_fee(&admin, &20_000);
+}
+
+#[test]
+fn test_set_fee_rejects_value_above_max_leaves_stored_fee_unchanged() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    client.set_fee(&admin, &250);
+    assert_eq!(client.get_fee_bps(), 250);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.set_fee(&admin, &20_000);
+    }));
+    assert!(result.is_err(), "fee_bps above 10000 must panic");
+
+    // Invariant: a rejected update must not mutate the previously stored fee.
+    assert_eq!(client.get_fee_bps(), 250);
+}
+
 // ── Username validation tests (issue #195) ───────────────────────────────────────
 
 #[test]
