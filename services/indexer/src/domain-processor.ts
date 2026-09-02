@@ -27,7 +27,13 @@ import {
 } from "./handlers/moderation";
 import { handleBlock, handleUnblock, handleDmKeyPublished } from "./handlers/user";
 import { handleProfileSet } from "./handlers/profile";
-import { handlePoolCreated, handlePoolDeposit, handlePoolWithdraw } from "./handlers/pool";
+import {
+  handlePoolCreated,
+  handlePoolDeposit,
+  handlePoolWithdraw,
+  handlePoolAdminAdded,
+  handlePoolAdminRemoved,
+} from "./handlers/pool";
 import { Database } from "./db";
 import { dispatchNotificationForBusEvent } from "./notifications/events";
 import { scValToNative, xdr } from "@stellar/stellar-sdk";
@@ -529,6 +535,32 @@ export function createDomainProcessor(
           pool_id,
           recipient,
           amount,
+          ledger: event.ledgerSequence,
+        });
+        break;
+      }
+
+      case "pool_admin_added": {
+        if (!db) break;
+        const pool_id = asString(data.pool_id);
+        const new_admin = asString(data.new_admin ?? data.admin);
+
+        await handlePoolAdminAdded(db, {
+          pool_id,
+          new_admin,
+          ledger: event.ledgerSequence,
+        });
+        break;
+      }
+
+      case "pool_admin_removed": {
+        if (!db) break;
+        const pool_id = asString(data.pool_id);
+        const removed_admin = asString(data.removed_admin ?? data.admin);
+
+        await handlePoolAdminRemoved(db, {
+          pool_id,
+          removed_admin,
           ledger: event.ledgerSequence,
         });
         break;
