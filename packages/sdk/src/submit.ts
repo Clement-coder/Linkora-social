@@ -3,6 +3,53 @@ import * as rpc from "@stellar/stellar-sdk/rpc";
 import { TransactionQueue, QueueSigner, RunOptions, RpcClient } from "./queue.js";
 import type { LinkoraClient } from "./client.js";
 
+const { isSimulationError } = rpc.Api;
+
+/**
+ * Wraps a Stellar SDK `rpc.Server` to satisfy the {@link RpcClient} interface
+ * expected by {@link TransactionQueue}.  The SDK's `Server` has richer
+ * method signatures (accepting Transaction objects, extra params, etc.) while
+ * `RpcClient` is a narrow, XDR-string-only contract used internally by the
+ * queue.
+ */
+function createRpcAdapter(server: rpc.Server): RpcClient {
+  return {
+    async simulateTransaction(xdr: string): Promise<SimulationResult> {
+      // The SDK's simulateTransaction expects a Transaction object.  Build a
+      // minimal Transaction from the XDR string so the call succeeds.
+      const { TransactionBuilder } = await import("@stellar/stellar-base");
+      // Use a dummy passphrase – the simulation endpoint doesn't validate it.
+      const tx = TransactionBuilder.fromXDR(xdr, "Test SDF Network ; September 2015");
+      const result = await server.simulateTransaction(tx);
+      const isError = isSimulationError(result);
+      return {
+        success: !isError,
+        resourceFee: String("minResourceFee" in result ? result.minResourceFee : "0"),
+        error: isError ? result.error : undefined,
+      };
+    },
+
+    async sendTransaction(signedXdr: string) {
+      const { TransactionBuilder } = await import("@stellar/stellar-base");
+      const tx = TransactionBuilder.fromXDR(signedXdr, "Test SDF Network ; September 2015");
+      const result = await server.sendTransaction(tx);
+      return {
+        hash: result.hash,
+        status: result.status as string,
+        errorResultXdr: "errorResultXdr" in result ? String(result.errorResultXdr) : undefined,
+      };
+    },
+
+    async getTransaction(hash: string) {
+      const result = await server.getTransaction(hash);
+      return {
+        status: result.status as string,
+        errorResultXdr: "errorResultXdr" in result ? String(result.errorResultXdr) : undefined,
+      };
+    },
+  };
+}
+
 /**
  * Adapt a Soroban-rpc `Server` to the narrower {@link RpcClient} interface that
  * `TransactionQueue` consumes, translating the raw SDK response shapes into the
