@@ -1,10 +1,10 @@
 // Jest setup file for DOM and React testing utilities
 import "@testing-library/jest-dom";
 import { toHaveNoViolations } from "jest-axe";
-import { TextEncoder } from "util";
+import { TextEncoder, TextDecoder } from "util";
 
-// Polyfill TextEncoder for jsdom (needed by SDK utf8 helper)
-global.TextEncoder = TextEncoder;
+(globalThis as any).TextEncoder = (globalThis as any).TextEncoder || TextEncoder;
+(globalThis as any).TextDecoder = (globalThis as any).TextDecoder || TextDecoder;
 
 // Extend Jest matchers with jest-axe
 expect.extend(toHaveNoViolations);
