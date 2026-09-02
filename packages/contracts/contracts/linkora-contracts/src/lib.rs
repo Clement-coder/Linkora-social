@@ -51,6 +51,7 @@ pub enum StorageKey {
     GovVote(u64, Address), // persistent: (proposal_id, voter) -> bool (prevents double-voting)
     GovConfig,             // persistent: governance configuration
     GovProposalCount,      // persistent: next proposal id counter
+    GovOpenProposalCount(Address), // persistent: proposer -> u32 count of open proposals
     // ── Analytics Oracle ──────────────────────────────────────────────────
     OracleKey(Symbol), // persistent: oracle_name -> BytesN<32> Ed25519 pubkey
     AttestationNullifier(BytesN<32>), // persistent: sha256(report_cbor) -> bool (replay guard)
@@ -114,6 +115,7 @@ const POOL_DEPOSIT_COOLDOWN_LEDGERS: u32 = 720;
 
 const MAX_PAGE_LIMIT: u32 = 50;
 const MAX_OPEN_REPORTS_PER_REPORTER: u32 = 10;
+const MAX_OPEN_PROPOSALS_PER_PROPOSER: u32 = 5;
 const MAX_TIP_TOTAL: i128 = 1_000_000_000_000_000_000; // 10^18 — bound tip_total to limit storage-rent cost
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -1322,21 +1324,19 @@ impl LinkoraContract {
         );
         Self::require_not_paused(&env);
 
-        if Self::is_either_blocked(&env, &followee, &follower) {
-            panic!("blocked");
-        }
-        if Self::is_blocked(env.clone(), follower.clone(), followee.clone()) {
-            panic!("blocked");
-        }
-        if Self::is_blocked(env.clone(), follower.clone(), followee.clone()) {
-            panic!("blocked");
-        }
+        require_with_error!(
+            &env,
+            !Self::is_either_blocked(&env, &followee, &follower),
+            "blocked: cannot follow — one user has blocked the other"
+        );
 
         // Consistency guards
         let check_expired = |k: &StorageKey| {
-            if !env.storage().persistent().has(k) {
-                panic!("graph entry expired - pay rent");
-            }
+            require_with_error!(
+                &env,
+                env.storage().persistent().has(k),
+                "graph entry expired — pay rent"
+            );
         };
 
         let registered: Map<Address, bool> = env
@@ -2139,12 +2139,11 @@ impl LinkoraContract {
             .persistent()
             .get(&post_key)
             .expect("post not found");
-        if Self::is_blocked(env.clone(), post.author.clone(), user.clone()) {
-            panic!("blocked");
-        }
-        if Self::is_blocked(env.clone(), user.clone(), post.author.clone()) {
-            panic!("blocked");
-        }
+        require_with_error!(
+            &env,
+            !Self::is_either_blocked(&env, &post.author, &user),
+            "blocked: cannot like — one user has blocked the other"
+        );
 
         let mut post = post;
         let like_idx_key = StorageKey::PostLikersIdx(post_id, post.like_count as u32);
@@ -2277,15 +2276,11 @@ impl LinkoraContract {
             "post author has no registered profile"
         );
 
-        if Self::is_either_blocked(&env, &post.author, &tipper) {
-            panic!("blocked");
-        }
-        if Self::is_blocked(env.clone(), tipper.clone(), post.author.clone()) {
-            panic!("blocked");
-        }
-        if Self::is_blocked(env.clone(), tipper.clone(), post.author.clone()) {
-            panic!("blocked");
-        }
+        require_with_error!(
+            &env,
+            !Self::is_either_blocked(&env, &post.author, &tipper),
+            "blocked: cannot tip — one user has blocked the other"
+        );
 
         // Check tip cooldown: one tip per tipper per post per cooldown window.
         let cooldown_key = StorageKey::TipCooldown(post_id, tipper.clone());
@@ -2440,7 +2435,8 @@ impl LinkoraContract {
         let current_ledger = env.ledger().sequence();
         if let Some(last_deposit_ledger) = env.storage().temporary().get::<_, u32>(&cooldown_key) {
             let ledgers_elapsed = current_ledger.saturating_sub(last_deposit_ledger);
-            assert!(
+            require_with_error!(
+                &env,
                 ledgers_elapsed >= POOL_DEPOSIT_COOLDOWN_LEDGERS,
                 "pool deposit cooldown not expired"
             );
@@ -2498,6 +2494,7 @@ impl LinkoraContract {
     ) {
         Self::bump_instance(&env);
         validate_address_list(&env, "signers", &signers);
+        validate_unique_signers(&env, "signers", &signers);
         validate_non_default_address(&env, "recipient", &recipient);
         validate_amount(&env, "withdraw amount", amount);
         let key = StorageKey::Pool(pool_id.clone());
@@ -2591,6 +2588,7 @@ impl LinkoraContract {
     pub fn add_pool_admin(env: Env, signers: Vec<Address>, pool_id: Symbol, new_admin: Address) {
         Self::bump_instance(&env);
         validate_address_list(&env, "signers", &signers);
+        validate_unique_signers(&env, "signers", &signers);
         validate_non_default_address(&env, "new_admin", &new_admin);
         let key = StorageKey::Pool(pool_id.clone());
         let mut pool: Pool = env
@@ -2641,6 +2639,7 @@ impl LinkoraContract {
     pub fn remove_pool_admin(env: Env, signers: Vec<Address>, pool_id: Symbol, admin: Address) {
         Self::bump_instance(&env);
         validate_address_list(&env, "signers", &signers);
+        validate_unique_signers(&env, "signers", &signers);
         validate_non_default_address(&env, "admin", &admin);
         let key = StorageKey::Pool(pool_id.clone());
         let mut pool: Pool = env
@@ -2699,6 +2698,7 @@ impl LinkoraContract {
     pub fn update_pool_threshold(env: Env, signers: Vec<Address>, pool_id: Symbol, threshold: u32) {
         Self::bump_instance(&env);
         validate_address_list(&env, "signers", &signers);
+        validate_unique_signers(&env, "signers", &signers);
         validate_u32_range(&env, "threshold", threshold, 1, MAX_QUORUM);
         let key = StorageKey::Pool(pool_id.clone());
         let mut pool: Pool = env
@@ -3029,6 +3029,26 @@ impl LinkoraContract {
             validate_non_default_address(&env, "new_address", address);
         }
 
+        // Rate guard: require a registered profile and bound open proposals per proposer.
+        let profile_key = StorageKey::Profile(proposer.clone());
+        require_with_error!(
+            &env,
+            env.storage().persistent().has(&profile_key),
+            "proposer must have a registered profile"
+        );
+
+        let open_count_key = StorageKey::GovOpenProposalCount(proposer.clone());
+        let open_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&open_count_key)
+            .unwrap_or(0u32);
+        require_with_error!(
+            &env,
+            open_count < MAX_OPEN_PROPOSALS_PER_PROPOSER,
+            "too many open proposals from this address"
+        );
+
         let config_key = StorageKey::GovConfig;
         let config: GovConfig = env
             .storage()
@@ -3061,6 +3081,19 @@ impl LinkoraContract {
         Self::bump(&env, &proposal_key);
         env.storage().persistent().set(&count_key, &id);
         Self::bump(&env, &count_key);
+
+        // Increment open proposal count for the proposer.
+        let open_count_key = StorageKey::GovOpenProposalCount(proposer.clone());
+        let new_open_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&open_count_key)
+            .unwrap_or(0u32)
+            + 1;
+        env.storage()
+            .persistent()
+            .set(&open_count_key, &new_open_count);
+        Self::bump(&env, &open_count_key);
 
         GovProposalCreatedEvent {
             proposal_id: id,
@@ -3284,6 +3317,20 @@ impl LinkoraContract {
         env.storage().persistent().set(&proposal_key, &proposal);
         Self::bump(&env, &proposal_key);
 
+        // Decrement open proposal count for the proposer.
+        let open_count_key = StorageKey::GovOpenProposalCount(proposal.proposer.clone());
+        let current_open: u32 = env
+            .storage()
+            .persistent()
+            .get(&open_count_key)
+            .unwrap_or(0u32);
+        if current_open > 0 {
+            env.storage()
+                .persistent()
+                .set(&open_count_key, &(current_open - 1));
+            Self::bump(&env, &open_count_key);
+        }
+
         GovProposalExecutedEvent {
             proposal_id,
             parameter: proposal.parameter,
@@ -3306,6 +3353,7 @@ impl LinkoraContract {
     pub fn gov_veto(env: Env, signers: Vec<Address>, pool_id: Symbol, proposal_id: u64) {
         Self::bump_instance(&env);
         validate_address_list(&env, "signers", &signers);
+        validate_unique_signers(&env, "signers", &signers);
         require_with_error!(&env, proposal_id > 0, "proposal id must be positive");
 
         let proposal_key = StorageKey::GovProposal(proposal_id);
@@ -3355,6 +3403,20 @@ impl LinkoraContract {
         proposal.status = GovStatus::Vetoed;
         env.storage().persistent().set(&proposal_key, &proposal);
         Self::bump(&env, &proposal_key);
+
+        // Decrement open proposal count for the proposer.
+        let open_count_key = StorageKey::GovOpenProposalCount(proposal.proposer.clone());
+        let current_open: u32 = env
+            .storage()
+            .persistent()
+            .get(&open_count_key)
+            .unwrap_or(0u32);
+        if current_open > 0 {
+            env.storage()
+                .persistent()
+                .set(&open_count_key, &(current_open - 1));
+            Self::bump(&env, &open_count_key);
+        }
 
         GovProposalVetoedEvent { proposal_id }.publish(&env);
     }
@@ -3406,6 +3468,7 @@ impl LinkoraContract {
         window_end: u64,
     ) -> bool {
         validate_non_default_address(&env, "creator", &creator);
+        validate_signature(&env, "signature", &signature);
         require_with_error!(
             &env,
             window_start <= window_end,
@@ -3942,6 +4005,7 @@ impl LinkoraContract {
         validate_non_default_address(&env, "moderator", &moderator);
         Self::require_role(&env, &moderator, Role::Moderator);
         validate_address_list(&env, "signers", &signers);
+        validate_unique_signers(&env, "signers", &signers);
         validate_non_default_address(&env, "reporter", &reporter);
         validate_report_verdict(&env, &verdict);
         require_with_error!(&env, post_id > 0, "post id must be positive");
