@@ -11,6 +11,11 @@ type ProposalWithQuorum = GovProposal & { effectiveQuorum: number };
 const GOVERNANCE_PARAMETERS = Object.values(GovParameter) as GovParameter[];
 const PAGE_SIZE = 10;
 
+// ── Shared Client Instance ───────────────────────────────────────────────────
+// Hoist a single LinkoraClient to module scope so all handlers reuse one client
+// and one underlying rpc.Server connection, avoiding per-action overhead.
+const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
+
 export default function GovernancePage() {
   const { address, connected } = useWalletContext();
   const [proposals, setProposals] = useState<ProposalWithQuorum[]>([]);
@@ -32,7 +37,6 @@ export default function GovernancePage() {
     setLoading(true);
     setFetchError(null);
     try {
-      const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
       const fetched: ProposalWithQuorum[] = [];
       // Bounded page scan: fetch at most PAGE_SIZE proposals per request instead
       // of scanning forever with while(true). "End of list" is detected by an id
@@ -83,7 +87,6 @@ export default function GovernancePage() {
     if (!address || !CONTRACT_ID) return;
     setIsSubmitting(true);
     try {
-      const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
       await client.govPropose(address, formParam, BigInt(formValue), null);
       setFormValue("");
       await fetchProposals();
@@ -98,7 +101,6 @@ export default function GovernancePage() {
   const handleVote = async (proposalId: bigint, support: boolean) => {
     if (!address || !CONTRACT_ID) return;
     try {
-      const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
       await client.govVote(address, proposalId, support);
       await fetchProposals();
     } catch (error) {
@@ -110,7 +112,6 @@ export default function GovernancePage() {
   const handleExecute = async (proposalId: bigint) => {
     if (!CONTRACT_ID) return;
     try {
-      const client = new LinkoraClient({ rpcUrl: RPC_URL, contractId: CONTRACT_ID });
       await client.govExecute(proposalId);
       await fetchProposals();
     } catch (error) {
