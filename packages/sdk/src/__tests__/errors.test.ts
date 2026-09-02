@@ -193,6 +193,51 @@ describe("mapError", () => {
     });
   });
 
+  describe("NetworkError (unreachable RPC)", () => {
+    it("maps an axios ECONNREFUSED error (socket code) to NetworkError", () => {
+      const err = new Error("connect ECONNREFUSED 127.0.0.1:8000");
+      (err as { code?: string }).code = "ECONNREFUSED";
+      const result = mapError(err);
+      expect(result).toBeInstanceOf(NetworkError);
+      expect(result.code).toBe("NETWORK_ERROR");
+      expect(result.originalError).toBe(err);
+    });
+
+    it("maps a DNS lookup failure (getaddrinfo ENOTFOUND) to NetworkError", () => {
+      const err = new Error("getaddrinfo ENOTFOUND rpc.example.com");
+      (err as { code?: string }).code = "ENOTFOUND";
+      const result = mapError(err) as NetworkError;
+      expect(result).toBeInstanceOf(NetworkError);
+      expect(result.originalError).toBe(err);
+    });
+
+    it("maps a plain-networked DNS failure string to NetworkError", () => {
+      expect(mapError("getaddrinfo ENOTFOUND rpc.example.com")).toBeInstanceOf(NetworkError);
+    });
+
+    it("maps a timeout-of-Xms error to NetworkError", () => {
+      const err = new Error("timeout of 30000ms exceeded");
+      (err as { code?: string }).code = "ECONNABORTED";
+      expect(mapError(err)).toBeInstanceOf(NetworkError);
+    });
+
+    it("maps 'TypeError: fetch failed' by walking the cause chain", () => {
+      const cause = new Error("connect ETIMEDOUT 192.168.0.10:8000");
+      (cause as { code?: string }).code = "ETIMEDOUT";
+      const err = new TypeError("fetch failed");
+      (err as { cause?: unknown }).cause = cause;
+      const result = mapError(err) as NetworkError;
+      expect(result).toBeInstanceOf(NetworkError);
+      expect(result.originalError).toBe(err);
+    });
+
+    it("maps an ECONNRESET from an abrupt socket close to NetworkError", () => {
+      const err = new Error("read ECONNRESET");
+      (err as { code?: string }).code = "ECONNRESET";
+      expect(mapError(err)).toBeInstanceOf(NetworkError);
+    });
+  });
+
   describe("SigningError", () => {
     it("matches 'freighter'", () => {
       expect(mapError("freighter extension not found")).toBeInstanceOf(SigningError);

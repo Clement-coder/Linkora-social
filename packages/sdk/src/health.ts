@@ -56,6 +56,7 @@ export class ConnectionHealthMonitor {
   private readonly backoffMs: number;
   private readonly maxBackoffMs: number;
   private readonly pingTimeoutMs: number;
+  private readonly server: rpc.Server;
 
   private status: ConnectionStatus = "disconnected";
   private listeners: ConnectionStatusCallback[] = [];
@@ -65,7 +66,7 @@ export class ConnectionHealthMonitor {
   private retryMetrics: RetryMetrics = emptyRetryMetrics();
   private readonly _server?: rpc.Server;
 
-private boundResume = () => this.resume();
+  private boundResume = () => this.resume();
 
   constructor(rpcUrl: string, config: HealthCheckConfig = {}, server?: rpc.Server) {
     this.rpcUrl = rpcUrl;
@@ -73,7 +74,7 @@ private boundResume = () => this.resume();
     this.backoffMs = config.backoffMs ?? 1_000;
     this.maxBackoffMs = config.maxBackoffMs ?? 30_000;
     this.pingTimeoutMs = config.pingTimeoutMs ?? 10_000;
-    this._server = server;
+    this.server = server ?? new rpc.Server(this.rpcUrl, { allowHttp: false });
 
     if (typeof window !== "undefined") {
       window.addEventListener("online", this.boundResume);
@@ -102,13 +103,8 @@ private boundResume = () => this.resume();
   /** Perform a single health check ping against the RPC endpoint. */
   async healthCheck(): Promise<boolean> {
     try {
-      // Reuse the shared server instance when provided by the client, avoiding
-      // per-call TLS/header setup and HTTP keep-alive pool invalidation.
-      const server = this._server ?? new rpc.Server(this.rpcUrl, {
-        allowHttp: false,
-      });
       const result = await withTimeout(
-        server.getLatestLedger(),
+        this.server.getLatestLedger(),
         this.pingTimeoutMs,
         `Health check timed out after ${this.pingTimeoutMs}ms`
       );
@@ -117,7 +113,6 @@ private boundResume = () => this.resume();
       return false;
     }
   }
-
 
   /** Alias for start(). Useful for resuming after a sustained outage stops polling. */
   resume(): void {
@@ -161,7 +156,10 @@ private boundResume = () => this.resume();
   }
 
   private scheduleCheck(delayMs: number): void {
-    const baseJitter = delayMs === 0 ? Math.random() * this.backoffMs : delayMs * 0.2 * Math.random();
+    const baseJitter =
+      delayMs === 0
+        ? Math.random() * Math.min(this.intervalMs, 100)
+        : delayMs * 0.2 * Math.random();
     this.timer = setTimeout(() => this.runCheck(), delayMs + baseJitter);
   }
 
