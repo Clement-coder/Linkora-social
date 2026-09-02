@@ -11,6 +11,7 @@ import {
   ConversationIdParamSchema,
   parseCursor,
   createCursor,
+  getMaxMessageBytes,
 } from "./validation";
 import { stellarAddressSchema } from "@linkora/types/src/schemas";
 import { createConversationId, sanitizeError } from "./utils";
@@ -24,6 +25,8 @@ import {
   internalError,
 } from "@linkora/types/src/errors";
 import type { InflightCounter } from "./inflight-counter";
+
+const CLOSE_MESSAGE_TOO_LARGE = 1009;
 
 const wsClients = new Map<string, Set<WebSocket>>();
 const typingRateLimitMap = new Map<string, number>();
@@ -40,12 +43,30 @@ const typingRateLimitMap = new Map<string, number>();
 export function registerWsClient(
   address: string,
   ws: WebSocket,
-  inflightCounter?: InflightCounter
+  inflightCounter?: InflightCounter,
+  maxMessageBytes: number = getMaxMessageBytes()
 ): void {
   if (!wsClients.has(address)) wsClients.set(address, new Set());
   wsClients.get(address)!.add(ws);
 
-  ws.on("message", (data) => {
+  ws.on("message", async (data) => {
+    const rawLength = Buffer.isBuffer(data)
+      ? data.length
+      : Array.isArray(data)
+        ? data.reduce((acc, b) => acc + b.length, 0)
+        : typeof data === "string"
+          ? Buffer.byteLength(data)
+          : (data as ArrayBuffer).byteLength;
+
+    if (rawLength > maxMessageBytes) {
+      logger.warn(
+        { authenticatedAddress: address, rawLength, maxMessageBytes },
+        "WebSocket frame exceeded max message size limit"
+      );
+      ws.close(CLOSE_MESSAGE_TOO_LARGE, "Message too large");
+      return;
+    }
+
     try {
       const payload = JSON.parse(data.toString());
       if (payload.type === "typing_status") {
@@ -84,10 +105,12 @@ export function registerWsClient(
         // so decrement immediately after dispatching.
         try {
           logger.info({ sender: address, recipient }, "Typing status notification dispatched");
-          pushToRecipient(recipient, {
+          await pushToRecipient(recipient, {
             type: "typing_status",
             sender: address,
           });
+        } catch (err) {
+          logger.error({ err, sender: address, recipient }, "Failed to push typing status");
         } finally {
           inflightCounter?.decrement();
         }
@@ -103,13 +126,30 @@ export function registerWsClient(
   });
 }
 
-function pushToRecipient(recipient: string, payload: object): void {
+function pushToRecipient(recipient: string, payload: object): Promise<void> {
   const sockets = wsClients.get(recipient);
-  if (!sockets) return;
+  if (!sockets) return Promise.resolve();
+  const openSockets = [...sockets].filter((ws) => ws.readyState === WebSocket.OPEN);
+  if (openSockets.length === 0) return Promise.resolve();
+
   const data = JSON.stringify(payload);
-  for (const ws of sockets) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(data);
-  }
+  const promises = openSockets.map(
+    (ws) =>
+      new Promise<void>((resolve) => {
+        try {
+          ws.send(data, (err) => {
+            if (err) {
+              logger.warn({ err, recipient }, "WebSocket send error");
+            }
+            resolve();
+          });
+        } catch (err) {
+          logger.warn({ err, recipient }, "Synchronous WebSocket send error");
+          resolve();
+        }
+      })
+  );
+  return Promise.all(promises).then(() => undefined);
 }
 
 interface ConversationMessage {

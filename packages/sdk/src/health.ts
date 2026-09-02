@@ -56,6 +56,7 @@ export class ConnectionHealthMonitor {
   private readonly backoffMs: number;
   private readonly maxBackoffMs: number;
   private readonly pingTimeoutMs: number;
+  private readonly server: rpc.Server;
 
   private status: ConnectionStatus = "disconnected";
   private listeners: ConnectionStatusCallback[] = [];
@@ -66,12 +67,13 @@ export class ConnectionHealthMonitor {
 
   private boundResume = () => this.resume();
 
-  constructor(rpcUrl: string, config: HealthCheckConfig = {}) {
+  constructor(rpcUrl: string, config: HealthCheckConfig = {}, server?: rpc.Server) {
     this.rpcUrl = rpcUrl;
     this.intervalMs = config.intervalMs ?? 30_000;
     this.backoffMs = config.backoffMs ?? 1_000;
     this.maxBackoffMs = config.maxBackoffMs ?? 30_000;
     this.pingTimeoutMs = config.pingTimeoutMs ?? 10_000;
+    this.server = server ?? new rpc.Server(this.rpcUrl, { allowHttp: false });
 
     if (typeof window !== "undefined") {
       window.addEventListener("online", this.boundResume);
@@ -100,14 +102,8 @@ export class ConnectionHealthMonitor {
   /** Perform a single health check ping against the RPC endpoint. */
   async healthCheck(): Promise<boolean> {
     try {
-      // Insecure HTTP is disabled by default (safe-by-default). A health check
-      // against a plaintext endpoint will simply report disconnected unless the
-      // endpoint was explicitly opted-in when constructing the client.
-      const server = new rpc.Server(this.rpcUrl, {
-        allowHttp: false,
-      });
       const result = await withTimeout(
-        server.getLatestLedger(),
+        this.server.getLatestLedger(),
         this.pingTimeoutMs,
         `Health check timed out after ${this.pingTimeoutMs}ms`
       );

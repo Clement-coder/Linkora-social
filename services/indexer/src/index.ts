@@ -325,7 +325,7 @@ async function main(): Promise<void> {
   // Initialise HTTP rate limiter (upgrades to Redis store when REDIS_URL is set).
   await initRateLimiter();
 
-  await ensureSchema();
+  await assertSchemaVersion(pgPool);
 
   const pipeline = new IngestPipeline(pgPool, {
     streamId: CONTRACT_ID,
@@ -460,6 +460,8 @@ async function main(): Promise<void> {
       ratePerSec: cfg.rpcRateLimitPerSec,
       minPollMs: cfg.minPollIntervalMs,
       maxPollMs: cfg.maxPollIntervalMs,
+      circuitBreakerThreshold: cfg.streamCircuitBreakerThreshold,
+      circuitBreakerProbeIntervalMs: cfg.streamCircuitBreakerProbeIntervalMs,
       backfillConfig: cfg.backfill,
       backfillCoordinator,
     },

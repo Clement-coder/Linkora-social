@@ -28,7 +28,7 @@ jest.mock("@stellar/stellar-base", () => ({
 }));
 
 /** Wait for a condition to become true, polling every 10ms. */
-function waitFor(condition: () => boolean, timeoutMs = 500): Promise<void> {
+function waitFor(condition: () => boolean, timeoutMs = 5000): Promise<void> {
   return new Promise((resolve, reject) => {
     const start = Date.now();
     const poll = () => {

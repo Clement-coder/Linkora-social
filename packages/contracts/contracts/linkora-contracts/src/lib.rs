@@ -12,9 +12,9 @@ mod validation;
 pub use errors::{ContractError, RentError};
 use validation::{
     validate_address_list, validate_amount, validate_gov_parameter, validate_non_default_address,
-    validate_protocol_fee, validate_report_verdict, validate_reporter_can_report,
-    validate_signature, validate_u32_range, validate_username, MAX_BIO_LEN, MAX_CONTENT_LEN,
-    MAX_FEE_BPS, MAX_QUORUM,
+    validate_protocol_fee, validate_pubkey_32, validate_report_verdict,
+    validate_reporter_can_report, validate_signature, validate_u32_range, validate_username,
+    MAX_BIO_LEN, MAX_CONTENT_LEN, MAX_FEE_BPS, MAX_QUORUM,
 };
 
 // ── Storage Key Enum ──────────────────────────────────────────────────────────
@@ -114,6 +114,7 @@ const POOL_DEPOSIT_COOLDOWN_LEDGERS: u32 = 720;
 
 const MAX_PAGE_LIMIT: u32 = 50;
 const MAX_OPEN_REPORTS_PER_REPORTER: u32 = 10;
+const MAX_TIP_TOTAL: i128 = 1_000_000_000_000_000_000; // 10^18 — bound tip_total to limit storage-rent cost
 
 // ── Data Types ────────────────────────────────────────────────────────────────
 
@@ -1144,6 +1145,7 @@ impl LinkoraContract {
         Self::bump_instance(&env);
         admin.require_auth();
         validate_non_default_address(&env, "admin", &admin);
+        validate_pubkey_32(&env, "authority_pubkey", &pubkey);
         Self::require_role(&env, &admin, Role::Admin);
         let key = StorageKey::CredentialAuthority;
         env.storage().persistent().set(&key, &pubkey);
@@ -1170,6 +1172,7 @@ impl LinkoraContract {
         Self::bump_instance(&env);
         user.require_auth();
         validate_non_default_address(&env, "user", &user);
+        validate_pubkey_32(&env, "new_root", &new_root);
         validate_signature(&env, "signature", &signature);
 
         let authority_key = StorageKey::CredentialAuthority;
@@ -1178,6 +1181,7 @@ impl LinkoraContract {
             .persistent()
             .get(&authority_key)
             .expect("credential authority not set");
+        validate_pubkey_32(&env, "authority_pubkey", &authority_pubkey);
         Self::bump(&env, &authority_key);
 
         // Verify Ed25519 signature: ed25519_verify(pubkey, message, signature).
@@ -2324,6 +2328,11 @@ impl LinkoraContract {
         let fee_amount =
             (amount / 10_000) * fee_bps as i128 + (amount % 10_000) * fee_bps as i128 / 10_000;
         let author_amount = amount - fee_amount;
+        require_with_error!(
+            &env,
+            post.tip_total.checked_add(author_amount).unwrap_or(0) <= MAX_TIP_TOTAL,
+            "tip_total cap exceeded"
+        );
         post.tip_total += author_amount;
         env.storage().persistent().set(&key, &post);
         Self::bump(&env, &key);
@@ -2370,8 +2379,13 @@ impl LinkoraContract {
         require_with_error!(&env, !env.storage().persistent().has(&key), "pool exists");
         require_with_error!(
             &env,
-            threshold > 0 && threshold <= initial_admins.len(),
+            threshold > 0,
             "invalid threshold"
+        );
+        require_with_error!(
+            &env,
+            threshold <= initial_admins.len(),
+            "threshold cannot exceed admin count"
         );
 
         // Clone admins for event payload before moving into storage
@@ -2550,17 +2564,18 @@ impl LinkoraContract {
     /// # Arguments
     /// * `pool_id` - Pool identifier
     ///
-    /// # Errors
-    /// * Panics if pool does not exist
-    pub fn get_pool_admins(env: Env, pool_id: Symbol) -> Vec<Address> {
+    /// # Returns
+    /// * `Some(Vec<Address>)` if the pool exists
+    /// * `None` if the pool does not exist
+    pub fn get_pool_admins(env: Env, pool_id: Symbol) -> Option<Vec<Address>> {
         let key = StorageKey::Pool(pool_id);
-        let pool: Pool = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("pool not found");
-        Self::bump(&env, &key);
-        pool.admins
+        let result: Option<Pool> = env.storage().persistent().get(&key);
+        if let Some(pool) = result {
+            Self::bump(&env, &key);
+            Some(pool.admins)
+        } else {
+            None
+        }
     }
 
     /// Adds an admin to a pool. Requires M-of-N admin signatures.
@@ -2694,6 +2709,12 @@ impl LinkoraContract {
 
         require_with_error!(
             &env,
+            threshold <= pool.admins.len(),
+            "threshold cannot exceed admin count"
+        );
+
+        require_with_error!(
+            &env,
             signers.len() >= pool.threshold,
             "insufficient signers"
         );
@@ -2705,12 +2726,6 @@ impl LinkoraContract {
             );
             signer.require_auth();
         }
-
-        require_with_error!(
-            &env,
-            threshold <= pool.admins.len(),
-            "threshold cannot exceed admin count"
-        );
 
         let old_threshold = pool.threshold;
         pool.threshold = threshold;

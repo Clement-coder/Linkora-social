@@ -16,6 +16,8 @@ import { useMobileDetect } from "@/hooks/useMobileDetect";
 import { MobileHeader } from "@/components/mobile/MobileHeader";
 import { MobileFeed } from "@/components/mobile/MobileFeed";
 import { MasonryCard } from "@/components/cards/MasonryCard";
+import { buildSignAndSubmit } from "@/lib/tx";
+import { nativeToScVal, Address } from "@stellar/stellar-sdk";
 
 /* ────────────────────────────────────────────────────────────────────────── */
 /*  Config & Constants                                                       */
@@ -23,6 +25,8 @@ import { MasonryCard } from "@/components/cards/MasonryCard";
 
 const contractId = process.env.NEXT_PUBLIC_CONTRACT_ID || "CDUMMY";
 const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || "https://soroban-testnet.stellar.org";
+const networkPassphrase =
+  process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE || "Test SDF Network ; September 2015";
 const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || "http://localhost:3001";
 const PAGE_SIZE = 10;
 
@@ -69,23 +73,31 @@ function InteractivePostCard({
     const nextIsLiked = !likeState.isLiked;
     const nextLikeCount = likeState.likeCount + (nextIsLiked ? 1 : -1);
 
-    // Apply optimistic update
-    OptimisticStore.setLikeState(key, {
-      isLiked: nextIsLiked,
-      likeCount: nextLikeCount,
-    });
-
     try {
-      const client = new LinkoraClient({ contractId, rpcUrl });
-      // In production, this XDR would be signed via Freighter and submitted.
-      const _txXdr = client.likePost(currentUserAddress, Number(post.id));
-    } catch (err) {
-      console.error("Failed to like post on chain:", err);
-      // Rollback optimistic update
+      // Build, sign, and submit the transaction
+      await buildSignAndSubmit(
+        nextIsLiked ? "like_post" : "unlike_post",
+        [
+          Address.fromString(currentUserAddress).toScVal(),
+          nativeToScVal(Number(post.id), { type: "u32" }),
+        ],
+        currentUserAddress,
+        {
+          contractId,
+          rpcUrl,
+          networkPassphrase,
+        }
+      );
+
+      // Apply optimistic update only after successful transaction
       OptimisticStore.setLikeState(key, {
-        isLiked: !nextIsLiked,
-        likeCount: likeState.likeCount,
+        isLiked: nextIsLiked,
+        likeCount: nextLikeCount,
       });
+    } catch (err) {
+      console.error("Failed to like/unlike post on chain:", err);
+      alert(`Failed to ${nextIsLiked ? "like" : "unlike"} post. Please try again.`);
+      // No optimistic update applied, so no rollback needed
     }
   };
 
@@ -426,28 +438,35 @@ export default function FeedPage() {
     setTipSubmitting(true);
     const amountVal = parseFloat(tipAmount);
     const postTipKey = String(tippingPost.id);
-
-    // Optimistically update tip count
     const currentTipTotal = Number(tippingPost.tip_total ?? 0);
-    const nextTipTotal = currentTipTotal + amountVal;
-    OptimisticStore.setTipState(postTipKey, { tipTotal: nextTipTotal });
 
     try {
-      const client = new LinkoraClient({ contractId, rpcUrl });
-      // Build transaction XDR
-      const _txXdr = client.tip(
+      // Build, sign, and submit the transaction
+      await buildSignAndSubmit(
+        "tip",
+        [
+          Address.fromString(currentUserAddress).toScVal(),
+          nativeToScVal(Number(tippingPost.id), { type: "u64" }),
+          Address.fromString(tipToken.trim()).toScVal(),
+          nativeToScVal(BigInt(Math.floor(amountVal * 10_000_000)), { type: "i128" }),
+        ],
         currentUserAddress,
-        Number(tippingPost.id),
-        tipToken.trim(),
-        BigInt(Math.floor(amountVal * 10_000_000)) // convert to 7 decimals
+        {
+          contractId,
+          rpcUrl,
+          networkPassphrase,
+        }
       );
+
+      // Apply optimistic update only after successful transaction
+      const nextTipTotal = currentTipTotal + amountVal;
+      OptimisticStore.setTipState(postTipKey, { tipTotal: nextTipTotal });
 
       handleCloseTipModal();
     } catch (err) {
       console.error("Tipping failed:", err);
-      // Rollback
-      OptimisticStore.setTipState(postTipKey, { tipTotal: currentTipTotal });
-      alert("Tipping transaction failed to build.");
+      alert("Failed to send tip. Please try again.");
+      // No optimistic update applied, so no rollback needed
     } finally {
       setTipSubmitting(false);
     }
