@@ -46,7 +46,8 @@ export async function submitTransaction(
       const tx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
       const res = await server.sendTransaction(tx);
       const rawXdr = (res as unknown as { errorResultXdr?: string }).errorResultXdr;
-      const errorResultXdr = rawXdr ?? (res.errorResult ? res.errorResult.toXDR("base64") : undefined);
+      const errorResultXdr =
+        rawXdr ?? (res.errorResult ? res.errorResult.toXDR("base64") : undefined);
       return {
         hash: res.hash,
         status: res.status,
@@ -74,11 +75,11 @@ export async function submitTransaction(
 
   queue.enqueue(xdrString);
   await queue.run(opts);
-  
+
   const hashes = queue.submittedHashes;
   if (hashes.length === 0 && !opts?.dryRun) {
     throw new Error("Transaction was not submitted successfully.");
   }
-  
+
   return hashes[0] ?? "";
 }

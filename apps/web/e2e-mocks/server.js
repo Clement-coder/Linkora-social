@@ -120,7 +120,9 @@ app.get("/api/follows/:address/followers", (req, res) => {
   const limit = parseInt(req.query.limit || "20", 10);
   const offset = parseInt(req.query.offset || "0", 10);
   const targetAddress = req.params.address;
-  const filteredMock = MOCK_USERS.filter((u) => u.address.toLowerCase() !== targetAddress.toLowerCase());
+  const filteredMock = MOCK_USERS.filter(
+    (u) => u.address.toLowerCase() !== targetAddress.toLowerCase()
+  );
   const paginated = filteredMock.slice(offset, offset + limit);
 
   res.json({
@@ -137,7 +139,9 @@ app.get("/api/follows/:address/following", (req, res) => {
   const limit = parseInt(req.query.limit || "20", 10);
   const offset = parseInt(req.query.offset || "0", 10);
   const targetAddress = req.params.address;
-  const filteredMock = MOCK_USERS.filter((u) => u.address.toLowerCase() !== targetAddress.toLowerCase());
+  const filteredMock = MOCK_USERS.filter(
+    (u) => u.address.toLowerCase() !== targetAddress.toLowerCase()
+  );
   const paginated = filteredMock.slice(offset, offset + limit);
 
   res.json({

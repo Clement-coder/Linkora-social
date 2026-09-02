@@ -1,14 +1,13 @@
 import { test, expect } from "@playwright/test";
+import { injectWalletMock } from "./test-utils";
 
 test.describe("Follows Flow", () => {
   const targetAddress = "GAHECF2UDYZSEO7RSIV24ZDVEFMF3IPKDJ65O54NQDUXG2JL6A35IOSG";
   const currentUserAddress = "GBSIBPRUU5B3R6P7NFLGSHACVZFW37K46RUO3RVXQB4AIEI6UADWGV2V";
 
   test.beforeEach(async ({ page }) => {
-    // Navigate to profile first
+    await injectWalletMock(page);
     await page.goto(`/profile/${targetAddress}`, { waitUntil: "domcontentloaded" });
-
-    // Inject mock wallet public key into localStorage so inline follow/unfollow is permitted
     await page.evaluate((key) => {
       localStorage.setItem("linkora_wallet_public_key", key);
     }, currentUserAddress);
